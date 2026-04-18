@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GTO Poker Solver</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>♠</text></svg>">
+</head>
+<body>
+
+<header class="header">
+    <div class="header-logo">
+        <span class="logo-icon">♠</span>
+        <h1>GTO Solver</h1>
+        <span class="version">v3.0</span>
+    </div>
+    <div class="header-actions">
+        <button class="header-btn" onclick="toggleRangeChart()">Preflop Ranges</button>
+        <button class="header-btn" onclick="resetAll()">New Hand</button>
+    </div>
+</header>
+
+<main class="app-layout">
+    <!-- ========== LEFT: Poker Table ========== -->
+    <div class="table-area">
+        <div class="felt">
+            <!-- Board cards in center -->
+            <div class="board-center">
+                <div class="pot-display" id="potDisplay">Pot: 1.5 BB</div>
+                <div class="board-cards" id="boardCards">
+                    <!-- Filled by JS when street advances -->
+                </div>
+                <div class="street-label" id="streetLabel">Preflop</div>
+            </div>
+
+            <!-- 6 seats around the table -->
+            <div class="seat seat-0" id="seat-0" data-pos="UTG">
+                <div class="seat-cards" id="cards-0"></div>
+                <div class="seat-info">
+                    <div class="seat-pos">UTG</div>
+                    <div class="seat-stack" id="stack-0">100 BB</div>
+                </div>
+                <div class="seat-status" id="status-0"></div>
+                <div class="seat-bet" id="bet-0"></div>
+            </div>
+            <div class="seat seat-1" id="seat-1" data-pos="HJ">
+                <div class="seat-cards" id="cards-1"></div>
+                <div class="seat-info">
+                    <div class="seat-pos">HJ</div>
+                    <div class="seat-stack" id="stack-1">100 BB</div>
+                </div>
+                <div class="seat-status" id="status-1"></div>
+                <div class="seat-bet" id="bet-1"></div>
+            </div>
+            <div class="seat seat-2" id="seat-2" data-pos="CO">
+                <div class="seat-cards" id="cards-2"></div>
+                <div class="seat-info">
+                    <div class="seat-pos">CO</div>
+                    <div class="seat-stack" id="stack-2">100 BB</div>
+                </div>
+                <div class="seat-status" id="status-2"></div>
+                <div class="seat-bet" id="bet-2"></div>
+            </div>
+            <div class="seat seat-3" id="seat-3" data-pos="BTN">
+                <div class="seat-cards" id="cards-3"></div>
+                <div class="seat-info">
+                    <div class="seat-pos">BTN</div>
+                    <div class="seat-stack" id="stack-3">100 BB</div>
+                </div>
+                <div class="seat-status" id="status-3"></div>
+                <div class="seat-bet" id="bet-3"></div>
+            </div>
+            <div class="seat seat-4" id="seat-4" data-pos="SB">
+                <div class="seat-cards" id="cards-4"></div>
+                <div class="seat-info">
+                    <div class="seat-pos">SB</div>
+                    <div class="seat-stack" id="stack-4">100 BB</div>
+                </div>
+                <div class="seat-status" id="status-4"></div>
+                <div class="seat-bet" id="bet-4"></div>
+            </div>
+            <div class="seat seat-5" id="seat-5" data-pos="BB">
+                <div class="seat-cards" id="cards-5"></div>
+                <div class="seat-info">
+                    <div class="seat-pos">BB</div>
+                    <div class="seat-stack" id="stack-5">100 BB</div>
+                </div>
+                <div class="seat-status" id="status-5"></div>
+                <div class="seat-bet" id="bet-5"></div>
+            </div>
+
+            <!-- Turn indicator arrow -->
+            <div class="turn-arrow" id="turnArrow"></div>
+            <!-- Dealer button -->
+            <div class="dealer-btn" id="dealerBtn">D</div>
+        </div>
+
+        <!-- Action bar below table -->
+        <div class="action-panel" id="actionPanel">
+            <div class="action-prompt" id="actionPrompt">
+                Click a seat to set as <strong>Hero</strong>, or right-click to mark as empty.
+            </div>
+            <div class="action-buttons" id="actionButtons" style="display:none">
+                <button class="act-btn fold" onclick="doAction('fold')">Fold</button>
+                <button class="act-btn check" onclick="doAction('check')">Check</button>
+                <button class="act-btn call" onclick="doAction('call')">Call <span id="callAmount"></span></button>
+                <button class="act-btn bet" onclick="showRaiseSlider()">Bet / Raise</button>
+                <button class="act-btn allin" onclick="doAction('allin')">All-in</button>
+            </div>
+            <div class="raise-slider-container" id="raiseSliderContainer" style="display:none">
+                <div class="raise-presets" id="raisePresets"></div>
+                <div class="raise-row">
+                    <input type="range" id="raiseSlider" min="2" max="100" value="6" class="raise-slider">
+                    <input type="number" id="raiseInput" value="6" class="raise-input" min="2">
+                    <span class="raise-unit">BB</span>
+                    <button class="act-btn bet" onclick="confirmRaise()">Confirm</button>
+                    <button class="act-btn fold" onclick="cancelRaise()">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card picker overlay -->
+        <div class="card-picker-overlay" id="cardPickerOverlay" style="display:none">
+            <div class="card-picker-panel">
+                <div class="picker-title" id="pickerTitle">Select Card</div>
+                <div id="pickerGrid"></div>
+                <button class="picker-close" onclick="closePicker()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== RIGHT: GTO Advice Panel ========== -->
+    <div class="advice-area">
+        <div class="advice-panel" id="advicePanel">
+            <div class="advice-header">
+                <span>GTO Recommendation</span>
+                <button class="get-advice-btn" id="getAdviceBtn" onclick="getAdvice()">Get Advice</button>
+            </div>
+            <div class="advice-body" id="adviceBody">
+                <div class="advice-empty">
+                    <div class="advice-empty-icon">♠</div>
+                    <h3>Set Up the Hand</h3>
+                    <ol>
+                        <li>Click a seat to mark as <b>Hero</b></li>
+                        <li>Pick your 2 hole cards</li>
+                        <li>For each player, choose their action</li>
+                        <li>When it's your turn, click <b>Get Advice</b></li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+        <!-- Action log -->
+        <div class="action-log-panel">
+            <div class="action-log-title">Hand History</div>
+            <div class="action-log" id="actionLog">
+                <div class="log-line muted">No actions yet</div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<!-- Villain detail popup -->
+<div class="villain-popup-overlay" id="villainPopup" style="display:none" onclick="closeVillainPopup(event)">
+    <div class="villain-popup-panel" onclick="event.stopPropagation()">
+        <div class="villain-popup-header">
+            <span id="villainPopupTitle">UTG's Response</span>
+            <button class="picker-close" onclick="closeVillainPopup()">Close</button>
+        </div>
+        <div id="villainPopupBody"></div>
+    </div>
+</div>
+
+<!-- Range chart overlay -->
+<div class="range-overlay" id="rangeOverlay" style="display:none">
+    <div class="range-overlay-panel">
+        <div class="range-overlay-header">
+            <span>Preflop Range Chart</span>
+            <div class="position-selector" id="rangePosSel">
+                <button class="position-btn active" data-pos="UTG" onclick="loadRange('UTG',this)">UTG</button>
+                <button class="position-btn" data-pos="HJ" onclick="loadRange('HJ',this)">HJ</button>
+                <button class="position-btn" data-pos="CO" onclick="loadRange('CO',this)">CO</button>
+                <button class="position-btn" data-pos="BTN" onclick="loadRange('BTN',this)">BTN</button>
+                <button class="position-btn" data-pos="SB" onclick="loadRange('SB',this)">SB</button>
+                <button class="position-btn" data-pos="BB" onclick="loadRange('BB',this)">BB</button>
+            </div>
+            <button class="picker-close" onclick="toggleRangeChart()">Close</button>
+        </div>
+        <div class="range-stats" id="rangeStats"></div>
+        <div class="range-matrix" id="rangeMatrix"></div>
+    </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+<script src="/js/app.js"></script>
+</body>
+</html>
