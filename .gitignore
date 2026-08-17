@@ -15,6 +15,8 @@ build/
 stress_test*.py
 test_*.py
 *_analysis.md
+# ...but the harness's test suite is part of the deliverable
+!werewolf_harness/tests/test_*.py
 
 # IDE
 .vscode/
@@ -28,3 +30,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# werewolf_harness
+*.db
+werewolf_harness/traces/
+werewolf_harness/runs/
+human_game_*.json

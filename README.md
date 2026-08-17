@@ -135,3 +135,26 @@ gto-poker-calculator/
 ## License
 
 MIT
+
+---
+
+## 另一个项目：多 Agent 对抗测试 Harness
+
+本仓库还包含一个独立的项目 [`werewolf_harness/`](werewolf_harness/) —— 与扑克计算器无关，
+是一层多 agent 的工程外壳，用狼人杀作为对抗测试环境，量化 agent 之间通过自然语言互相
+劫持的脆弱性，以及防御的效果和**代价**。
+
+- 确定性裁判（规则复用 MIT 协议的 `werewolf-engine`，engine/ 只是适配层，不含任何模型调用）
+- 自己写的 ReAct 循环 + 工具层 + 结构化记忆（不依赖任何 agent 框架）
+- 三层防护 + 证据强制，可逐层消融；攻击样本分 dev / holdout，避免自证
+- 六个指标轴 + 过度防御轴，带置信区间；离线 mock 客户端让整条链路无需 API key 即可跑通
+
+```bash
+python -m werewolf_harness.cli demo        # 离线跑一局
+python -m werewolf_harness.cli serve       # 对局回放看板
+pytest werewolf_harness/tests -q
+```
+
+详见 [`werewolf_harness/README.md`](werewolf_harness/README.md)、
+[`ENGINEERING.md`](werewolf_harness/ENGINEERING.md)、
+[`FINDINGS.md`](werewolf_harness/FINDINGS.md)。

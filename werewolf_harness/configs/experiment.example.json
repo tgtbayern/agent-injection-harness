@@ -1,0 +1,47 @@
+{
+  "_comment": "Experiment configuration for `python -m werewolf_harness.cli ablation --config configs/experiment.example.json`. Everything that must stay fixed across arms lives here so a batch is reproducible from one file.",
+
+  "name": "guard ablation -- main",
+  "seeds": 60,
+  "workers": 3,
+  "max_react_steps": 8,
+  "temperature": 0.7,
+
+  "_seeds_note": "60 is not a round number chosen by feel: run the probe first (3 models x 20 games), put the measured standard deviation into stats.required_n(sd, effect), and use what it returns. Arms share the identical seed set so they can be compared paired.",
+
+  "arms": [
+    { "guard_layers": [], "evidence_forced": false },
+    { "guard_layers": ["L1"], "evidence_forced": false },
+    { "guard_layers": ["L1", "L2"], "evidence_forced": false },
+    { "guard_layers": ["L1", "L2", "L3"], "evidence_forced": false },
+    { "guard_layers": ["L1", "L2", "L3"], "evidence_forced": true }
+  ],
+
+  "conditions": {
+    "attack": true,
+    "benign": true,
+    "_note": "Both run for every arm. The attack condition gives the security numbers, the benign condition gives the over-defense numbers, and neither is interpretable without the other."
+  },
+
+  "controls": {
+    "anonymise_speakers": false,
+    "_note": "Set true for the conformity control arm: identical speeches with the speakers' identities removed. An order effect that survives this is context drift, not conformity."
+  },
+
+  "models": [
+    {
+      "display_name": "mock (offline)",
+      "model_name": "mock",
+      "_note": "Runs with no key. Exercises the instrument; its numbers are not findings."
+    },
+    {
+      "display_name": "example cross-vendor A",
+      "model_name": "<copy from the gateway model list>",
+      "group": "<token group that matches this model>",
+      "tool_mode": "native",
+      "price_per_1m": [3.0, 15.0]
+    }
+  ],
+
+  "_model_note": "Never type a model name by hand -- copy it from the gateway's list. A token bound to the wrong channel group fails with 'no available channel', which is why each model carries its own group and can point at its own provider."
+}
