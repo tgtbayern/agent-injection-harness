@@ -1,0 +1,188 @@
+/* Instrument panel, not a product page.
+   One saturated colour only -- attack red. Everything else stays quiet so the
+   injection points are the only thing that pulls the eye. */
+
+:root {
+  --bg: #0f1115;
+  --surface: #181b21;
+  --surface-2: #1f232b;
+  --line: #262b34;
+  --text: #d6d9de;
+  --muted: #6b7280;
+  --attack: #e0533d;
+  --guard: #3d9970;
+  --belief: #c9a227;
+  --mono: "JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--sans);
+}
+
+a { color: inherit; }
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 24px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+header h1 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+header .sub { color: var(--muted); font-size: 12px; }
+
+nav { margin-left: auto; display: flex; gap: 4px; }
+
+nav button {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+}
+
+nav button.active { color: var(--text); border-color: var(--line); background: var(--surface-2); }
+
+main { padding: 20px; max-width: 1400px; }
+
+.page { display: none; }
+.page.active { display: block; }
+
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+.grow { flex: 1; min-width: 180px; }
+
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+
+input, select, textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+input[type="checkbox"] { width: auto; }
+
+button.action {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+}
+
+button.action:hover { border-color: var(--muted); }
+button.action.danger { color: var(--attack); }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.num, th.num { text-align: right; font-family: var(--mono); }
+
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.attack { color: var(--attack); }
+.guard { color: var(--guard); }
+.belief { color: var(--belief); }
+
+/* ---- replay ---- */
+
+.replay-grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+
+.rounds { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.rounds button {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+}
+.rounds button.active { color: var(--text); border-color: var(--muted); }
+
+/* The signature element: one tick per injection attempt, filled when it
+   changed a vote, hollow when it was blocked or ignored. */
+.timeline { display: flex; align-items: center; gap: 3px; margin: 10px 0 4px; flex-wrap: wrap; }
+.tick { width: 9px; height: 9px; border: 1px solid var(--attack); border-radius: 1px; }
+.tick.hit { background: var(--attack); }
+.tick.round-sep { width: 1px; height: 12px; background: var(--line); border: 0; margin: 0 5px; }
+
+.players { list-style: none; margin: 0; padding: 0; }
+.players li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.players li:hover { background: var(--surface-2); }
+.players li.selected { border-color: var(--muted); background: var(--surface-2); }
+.players li.dead { color: var(--muted); text-decoration: line-through; }
+.players .flag { width: 12px; display: inline-block; text-align: center; }
+
+.step { border-left: 2px solid var(--line); padding: 6px 0 6px 12px; margin-bottom: 4px; }
+.step.injected { border-left-color: var(--attack); }
+.step.blocked { border-left-color: var(--guard); }
+.step .head { font-family: var(--mono); font-size: 12.5px; }
+.step .obs { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+mark { background: rgba(224, 83, 61, 0.22); color: var(--attack); padding: 0 2px; border-radius: 2px; }
+
+.beliefdiff { font-family: var(--mono); font-size: 12.5px; }
+.beliefdiff .up { color: var(--belief); }
+
+.speech { border: 1px solid var(--line); border-radius: 3px; padding: 8px 10px; margin: 8px 0; white-space: pre-wrap; }
+
+.pill {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.pill.attack { border-color: var(--attack); color: var(--attack); }
+.pill.guard { border-color: var(--guard); color: var(--guard); }
+
+.legend { font-size: 12px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
+
+.notice { border-left: 2px solid var(--attack); padding-left: 10px; color: var(--muted); font-size: 12.5px; }
+.hint { color: var(--belief); font-size: 12.5px; }
+.empty { color: var(--muted); padding: 20px 0; }
+progress { width: 100%; height: 6px; }
