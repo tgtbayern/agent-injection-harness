@@ -218,21 +218,73 @@ A block re-prompts with the reason; it does not end the turn.
 
 ---
 
-## 6. Two bugs worth recording
+## 6. Bugs worth recording
 
-**The over-blocking regex.** The first version of L3's directive detector
-matched any `vote 4`. Since every agent's speech ends "I vote 4", *every* ballot
-looked like obedience to an instruction, L3 blocked nearly all of them, and the
-"over-defense cost" it produced would have been a measurement of my own sloppy
-regex rather than of a real trade-off. Fixed by matching imperative phrasing
-only: announcing your own vote is play, telling someone else what theirs must be
-is not. The distinction is now a test.
+Most of these were found by an invariant sweep (180 games, every assertion that
+should always hold) and by probing the paths the offline client rarely takes.
+Almost none of them would have been caught by reading the code.
 
-**The filter tuned to its own test set.** L2's patterns were, inevitably,
-written while looking at the payload corpus. Numbers from that are circular. The
-corpus now carries a `dev`/`holdout` split, no pattern targets a holdout payload,
-and a test asserts the holdout is *not* fully neutralised — if it ever were,
-that would be evidence the patterns had been fitted to it.
+**The over-blocking regex.** L3's first directive detector matched any
+`vote 4`. Since every agent's speech ends "I vote 4", *every* ballot looked like
+obedience, L3 blocked nearly all of them, and the "over-defense cost" it
+produced would have measured my own sloppy regex rather than a real trade-off.
+Now it matches imperative phrasing only: announcing your own vote is play,
+telling someone else what theirs must be is not.
+
+**The filter tuned to its own test set.** L2's patterns were written while
+looking at the payload corpus, which makes any number from them circular. The
+corpus now carries a `dev`/`holdout` split, no pattern targets a holdout
+payload, and a test asserts the holdout is *not* fully neutralised.
+
+**Death causes were public.** The view handed out the library's cause string,
+so the whole table could read whether a night death was the wolves or the
+witch's poison — precisely what the village is supposed to infer. Pre-existing,
+and invisible while the old scripted witch always saved on night one, so nobody
+ever died to look at. Public deaths are now "exiled" or "night" and nothing
+more, and a test checks no tool output distinguishes them either.
+
+**Poison deaths were recorded as wolf kills.** The library clears the witch's
+target inside `resolve()`, so reading it back afterwards always returned
+nothing and every night death defaulted to the pack. Causes now come from what
+was actually submitted that night. No leak — both are "night" in public — but
+the log is the record of truth, and it was wrong.
+
+**Trimming crashed on every long turn.** The context trimmer read `content` off
+the messages it dropped; in native tool-calling mode an assistant message's
+content is `None`, so slicing it raised. It only fires on turns long enough to
+need trimming, which the offline client almost never produces and a real model
+produces constantly — the failure was waiting for the first paid run. The
+window is now also cut on pair boundaries, since splitting an assistant call
+from its `tool` result is a 400 from any OpenAI-compatible gateway.
+
+**The context budget silently weakened attack path B.** A `query_history`
+return carries a whole speech plus whatever rides on its end, and the budget
+was smaller than that, so a full-length carrier had its tail — often the clause
+naming the target — cut off. The channel the experiment calls the dangerous one
+was being handicapped by my own constant, by an amount that varied with how
+long the carrier speech happened to be. The budget is now derived from the
+speech cap so the two cannot drift, and clipping is *reported* on every
+exposure rather than inferred: a guard layer rewrites the text too, and
+conflating "the filter removed it" with "the budget cut it off" makes both
+numbers meaningless. (My first attempt at measuring this did exactly that and
+reported 86% partial delivery, all of it the filter.)
+
+**Metrics ignored a quarter of the sample.** When the night became agent-driven,
+the metric layer still walked only the day turns, so night turns — about 27% of
+all turns — never reached the stability axis. A model that fails at night would
+not have shown up in the one axis that counts failures.
+
+**Loop detection exempted terminal actions.** A terminal action that the engine
+*rejects* could repeat until the step budget ran out; the witch spent eight
+steps trying to use an antidote she had already spent. Two fixes: the referee
+no longer offers an action that state makes illegal, and the exemption is gone
+— a successful terminal breaks the loop anyway, so reaching the check three
+times with the same call means it is being refused three times.
+
+**The human saw exiles as night kills.** After the public cause changed, the
+human CLI still compared against the engine's internal value, so every exiled
+player was displayed as having died at night — misinforming the one player
+whose judgement the human baseline exists to measure.
 
 ---
 
