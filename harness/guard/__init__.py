@@ -101,8 +101,13 @@ class GuardStack:
         out = text
 
         if self.l2:
-            out, dets = filter_mod.sanitise(out, self.filter_categories)
-            detections = [d.to_dict() | {"source": source, "kind": kind} for d in dets]
+            # Sentence-level removal, not a visible stub: the stub is kept for
+            # the log only. See filter.strip_segments for why.
+            out, dets, log_text = filter_mod.strip_segments(out, self.filter_categories)
+            detections = [
+                d.to_dict() | {"source": source, "kind": kind, "redacted_text": log_text}
+                for d in dets
+            ]
         else:
             # Detection without action: needed so "no guard" runs still record
             # where the payloads were, which is what axis 1 is measured against.
