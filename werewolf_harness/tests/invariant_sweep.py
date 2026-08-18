@@ -117,7 +117,7 @@ def audit(log):
         check(len(live_wolves) >= len(live_village) or len(log["rounds"]) >= 6,
               f"wolves won at {sorted(live_wolves)} vs {sorted(live_village)}", gid)
     else:
-        check(False, f"no winner recorded", gid)
+        check(False, "no winner recorded", gid)
 
     # --- payload bookkeeping ---
     for p in log.get("planted_payloads", []):
