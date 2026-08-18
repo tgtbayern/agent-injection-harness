@@ -122,3 +122,36 @@ def test_masking_helper():
     assert dbmod.mask_key("sk-abcdefghijklmnop") == "sk-****mnop"
     assert dbmod.mask_key("short") == "****"
     assert dbmod.mask_key("") == ""
+
+
+# --------------------------------------------------- the real HTTP client
+
+def test_a_full_game_over_real_http_in_both_tool_modes():
+    """The offline client bypasses the HTTP layer, native tool-call
+    round-tripping, message pairing, usage accounting and the error mapping --
+    every part the first paid run depends on. A local server that speaks the
+    chat-completions API exercises them without a network or a key."""
+    from werewolf_harness.tests.fake_gateway import _check
+
+    assert _check(port=8917) == 0
+
+
+def test_the_probe_survives_a_transient_gateway_failure():
+    """A relay hiccup must not be reported as "this model does not work": the
+    probe decides which models enter the experiment at all."""
+    from werewolf_harness.harness.providers import OpenAICompatClient, probe_model
+    from werewolf_harness.tests import fake_gateway
+
+    server = fake_gateway.serve(port=8918)
+    try:
+        fake_gateway.Handler.fail_next = 2
+        result = probe_model(
+            OpenAICompatClient(model="fake-flaky", api_key="sk-local-fake",
+                               base_url="http://127.0.0.1:8918/v1"),
+            check_temperature=False,
+        )
+        assert result.reachable, result.error
+        assert any("transient" in n for n in result.notes), result.notes
+    finally:
+        fake_gateway.Handler.fail_next = 0
+        server.shutdown()

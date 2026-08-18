@@ -155,6 +155,57 @@ def cmd_seed_db(args) -> int:
     return 0
 
 
+def cmd_setup_gateway(args) -> int:
+    """Register relay providers from the environment.
+
+    Keys are read from the environment (or a git-ignored .env), never passed on
+    the command line, so they do not end up in shell history. A gateway usually
+    binds one token to one channel group, so each group becomes its own
+    provider and a model points at the one that can actually serve it.
+    """
+    from .server import db as dbmod
+
+    base = os.getenv("LLM_BASE_URL", "")
+    if not base:
+        print("set LLM_BASE_URL (see .env.example)", file=sys.stderr)
+        return 2
+    if not base.rstrip("/").endswith("/v1"):
+        print(f"warning: {base} does not end in /v1, which most gateways require",
+              file=sys.stderr)
+
+    groups = [
+        (name, os.getenv(var, ""))
+        for name, var in (
+            ("openai-group", "LLM_KEY_OPENAI_GROUP"),
+            ("claude-group", "LLM_KEY_CLAUDE_GROUP"),
+        )
+    ]
+    groups = [(n, k) for n, k in groups if k]
+    if not groups:
+        if os.getenv("LLM_API_KEY"):
+            groups = [("default", os.environ["LLM_API_KEY"])]
+        else:
+            print("no keys in the environment; set LLM_KEY_*_GROUP or LLM_API_KEY",
+                  file=sys.stderr)
+            return 2
+
+    conn = dbmod.connect(args.db)
+    existing = {p["name"] for p in dbmod.list_providers(conn)}
+    for name, key in groups:
+        if name in existing:
+            print(f"  {name}: already registered, left alone")
+            continue
+        provider = dbmod.add_provider(conn, name, base, key)
+        print(f"  {name}: {provider['api_key_masked']} -> {base}")
+
+    print(f"\n{len(dbmod.list_providers(conn))} provider(s) in {args.db}")
+    print("Next: add a model with the name COPIED from the gateway's model list "
+          "(never typed), then probe it:")
+    print("  python -m werewolf_harness.cli serve      # config page, or")
+    print("  python -m werewolf_harness.cli probe --model <name> --group <group>")
+    return 0
+
+
 def cmd_probe(args) -> int:
     from .harness.providers import OpenAICompatClient, probe_model
 
@@ -293,6 +344,11 @@ def main(argv=None) -> int:
     seed_db.add_argument("--db", default="werewolf_harness.db")
     seed_db.add_argument("--games", type=int, default=3, help="seeds per configuration")
     seed_db.set_defaults(func=cmd_seed_db)
+
+    setup = sub.add_parser("setup-gateway",
+                           help="register relay providers from the environment")
+    setup.add_argument("--db", default="werewolf_harness.db")
+    setup.set_defaults(func=cmd_setup_gateway)
 
     probe = sub.add_parser("probe", help="phase-0 gateway checks for one model")
     add_common(probe)
