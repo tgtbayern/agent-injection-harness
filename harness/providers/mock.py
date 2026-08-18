@@ -31,6 +31,10 @@ from ..guard import verify_mod
 from .base import LLMClient, LLMResponse, ToolCall
 
 _SELF = re.compile(r"You are player (\d+), role: (\w+)")
+_NIGHT = re.compile(r"=== NIGHT (\d+)")
+_TARGETS = re.compile(r"Legal targets: \[([\d, ]*)\]")
+_ACTIONS = re.compile(r"You may call: (.+)")
+_VICTIMS = re.compile(r"The wolves attacked: \[([\d, ]*)\]")
 _ROUND = re.compile(r"=== ROUND (\d+)")
 _ALIVE = re.compile(r"Alive: \[([\d, ]*)\]")
 _TASK_SPEAK = "it is your turn to speak"
@@ -69,7 +73,18 @@ class MockClient(LLMClient):
         rng = random.Random(f"{self.seed}:{me}:{round_no}:{step}:{len(prompt)}")
 
         speaking = _TASK_SPEAK in prompt
+        night = _NIGHT.search(prompt) is not None
         retry_reason = _last_block_reason(messages)
+
+        if night:
+            call = self._decide_night(rng, me, role, prompt, retry_reason)
+            text = call.raw_arguments or ""
+            return LLMResponse(
+                text=text, tool_calls=[call],
+                prompt_tokens=max(1, len(prompt) // 4),
+                completion_tokens=max(1, len(text) // 4),
+                latency_ms=self.latency_ms, model="mock",
+            )
 
         # What untrusted content is asking for, ignoring anything the filter
         # already removed (removed text is simply not in the prompt any more).
@@ -104,6 +119,59 @@ class MockClient(LLMClient):
             latency_ms=self.latency_ms,
             model="mock",
         )
+
+    # ---- night ----------------------------------------------------------
+
+    def _decide_night(self, rng, me, role, prompt, retry_reason) -> ToolCall:
+        """A plausible night, played from what the prompt actually offers.
+
+        Deliberately simple, and deliberately not optimal: the mock exists to
+        exercise the machinery, and a night policy tuned to win would be one
+        more hand-set constant to explain away later.
+        """
+        targets = _int_list(_TARGETS, prompt)
+        actions = _ACTIONS.search(prompt)
+        allowed = [a.strip() for a in actions.group(1).split(",")] if actions else []
+
+        if retry_reason and targets:
+            # Whatever was refused, take the plainest legal option instead.
+            targets = targets[1:] or targets
+
+        if role == "seer" and "night_check" in allowed and targets:
+            # Check the player it already suspects most, else anyone unchecked.
+            return _mk("night_check", {"target_id": self._suspect(prompt, targets, rng)})
+
+        if role == "werewolf" and "night_kill" in allowed and targets:
+            # Wolves hunt the villager the table trusts most -- lowest suspicion
+            # in this wolf's own notes.
+            return _mk("night_kill", {"target_id": self._least_suspect(prompt, targets, rng)})
+
+        if role == "witch":
+            victims = _int_list(_VICTIMS, prompt)
+            if "night_save" in allowed and victims and me not in victims:
+                return _mk("night_save", {"target_id": victims[0]})
+            if "night_save" in allowed and me in victims:
+                return _mk("night_save", {"target_id": me})
+            if "night_poison" in allowed and targets and rng.random() < 0.25:
+                return _mk("night_poison", {"target_id": self._suspect(prompt, targets, rng)})
+
+        return _mk("night_skip", {})
+
+    def _suspect(self, prompt, targets, rng) -> int:
+        best, score = None, -1.0
+        for m in re.finditer(r"player (\d+): suspicion=([0-9.]+)", prompt):
+            pid, val = int(m.group(1)), float(m.group(2))
+            if pid in targets and val > score:
+                best, score = pid, val
+        return best if best is not None else rng.choice(targets)
+
+    def _least_suspect(self, prompt, targets, rng) -> int:
+        best, score = None, 2.0
+        for m in re.finditer(r"player (\d+): suspicion=([0-9.]+)", prompt):
+            pid, val = int(m.group(1)), float(m.group(2))
+            if pid in targets and val < score:
+                best, score = pid, val
+        return best if best is not None else rng.choice(targets)
 
     # ---- policy ---------------------------------------------------------
 
@@ -220,6 +288,13 @@ def _identity(system: str) -> tuple[int, str]:
 def _int(rx: re.Pattern, text: str, default: int) -> int:
     m = rx.search(text or "")
     return int(m.group(1)) if m else default
+
+
+def _int_list(rx: re.Pattern, prompt: str) -> list[int]:
+    m = rx.search(prompt or "")
+    if not m or not m.group(1).strip():
+        return []
+    return [int(x) for x in m.group(1).split(",") if x.strip()]
 
 
 def _alive(prompt: str, me: int) -> list[int]:

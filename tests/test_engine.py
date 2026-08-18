@@ -18,7 +18,24 @@ def test_same_seed_gives_the_same_world():
     a, b = GameState.new(42), GameState.new(42)
     assert a.roles == b.roles
     assert a.setup.speech_order == b.setup.speech_order
-    assert a.setup.seer_preference == b.setup.seer_preference
+    assert a.setup.fallback_order == b.setup.fallback_order
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_speech_order_is_fixed_while_roles_move(seed):
+    """Position and role vary independently.
+
+    Shuffling the speech order instead would confound the conformity axis:
+    "spoke fifth" and "was the seer" would move together, and an order effect
+    could not be told apart from a role effect.
+    """
+    state = GameState.new(seed)
+    assert state.setup.speech_order == list(range(1, 9))
+
+
+def test_roles_still_differ_across_seeds():
+    assignments = {tuple(sorted(GameState.new(s).setup.wolves())) for s in range(30)}
+    assert len(assignments) > 5
 
 
 def test_different_seeds_give_different_worlds():

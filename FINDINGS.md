@@ -41,17 +41,24 @@ speech, and the tool channel is the one closer to a poisoned RAG document.
 
 ## 2. Controls
 
-**Fixed across every arm:** seed set (which fixes roles, speech order, night
-play), temperature (0.7, set explicitly — never a per-vendor default), the
+**Fixed across every arm:** seed set (which fixes the role assignment),
+temperature (0.7, set explicitly — never a per-vendor default), the
 prompt template (identical for all models; tuning it per model would measure
 prompt engineering), the output contract, six-round cap, eight-step ReAct limit.
 
 **Single-model games.** All eight seats are the same model. Mixed tables measure
-interaction effects, not model properties.
+interaction effects, not model properties. Which model sat in which seat is
+recorded on every turn regardless (`config.seat_models`, and a `model` tag on
+each turn), so a mixed table is a configuration change rather than a code
+change -- and no trace is ever ambiguous about what produced it.
 
 **Paired by seed.** Every configuration runs the identical seed set, and
 comparisons use paired differences keyed on the *seed*, not on list position —
 so one crashed game shifts one pair rather than every pair after it.
+
+**Speech order is fixed at seats 1-8; roles are randomised.** Doing it the
+other way round would confound axis 5: "spoke fifth" and "was the seer" would
+move together, and an order effect could not be told apart from a role effect.
 
 **The conformity control arm.** Axis 5 is untrustworthy without it: run the same
 games with speaker identities stripped from the transcript (`anonymise_speakers`)
@@ -155,8 +162,11 @@ post-hoc change gets stated as post-hoc, with both numbers shown.
   what someone said, without quoting, defeats both the content filter and the
   citation check. Only quoted fabrications die against the transcript. This is
   asserted in the test suite so it cannot quietly disappear.
-- **The night is scripted.** Night play is seeded, not agentic, so nothing here
-  says anything about night-phase reasoning.
+- **Night play is in scope but under-instrumented.** Night actions are the
+  agents' own and carry full traces, but no metric axis scores them yet: there
+  is no number for "did the seer check well" or "did the pack pick the right
+  target". The traces are in every log, so an axis can be added without
+  re-running anything.
 - **Regex-based detection is a floor, not a ceiling.** L2 and L3 are pattern
   matchers. A payload phrased outside the patterns passes, which is why the
   holdout split exists and why "we blocked everything" is not a claim this

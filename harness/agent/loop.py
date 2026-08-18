@@ -42,7 +42,9 @@ class TurnResult:
     speech: str | None = None
     speech_order: int | None = None
     vote: int | None = None
+    night_action: dict | None = None
     is_human: bool = False
+    model: str = "?"
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latency_ms: int = 0
@@ -84,6 +86,7 @@ class TurnResult:
         return {
             "player_id": self.player_id,
             "is_human": self.is_human,
+            "model": self.model,
             "task": self.task,
             "react_trace": self.react_trace,
             "belief_before": self.belief_before,
@@ -91,6 +94,7 @@ class TurnResult:
             "speech": self.speech,
             "speech_order": self.speech_order,
             "vote": self.vote,
+            "night_action": self.night_action,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
@@ -156,6 +160,7 @@ class AgentLoop:
             {"role": "user", "content": situation},
         ]
 
+        role = view["you"]["role"]
         ctx = ToolContext(state=state, player_id=player_id, belief=belief, view=view)
         queried_players: set[int] = set()
         queried_vote_rounds: set[int] = set()
@@ -170,7 +175,7 @@ class AgentLoop:
             response = call_model(
                 self.client,
                 messages,
-                self.registry.openai_schemas(),
+                self.registry.openai_schemas(role, task),
                 policy=self.policy,
                 stats=stats,
                 temperature=self.temperature,
@@ -210,7 +215,7 @@ class AgentLoop:
 
             # --- gate 1+2: schema and whitelist --------------------------
             try:
-                name, args = self.registry.validate(call.name, call.arguments)
+                name, args = self.registry.validate(call.name, call.arguments, role, task)
             except SchemaError as exc:
                 schema_failures += 1
                 stats.retries += 1
@@ -228,12 +233,15 @@ class AgentLoop:
             step.action, step.args = name, dict(args)
 
             # --- loop detection ------------------------------------------
+            terminal = bool(self.registry.get(name) and self.registry.get(name).terminal)
             signature = (name, tuple(sorted((k, str(v)) for k, v in args.items())))
             recent.append(signature)
+            # No exemption for terminal actions. A successful terminal breaks
+            # out of this loop, so reaching here with the same terminal call
+            # three times running means it is being refused three times running.
             if (
                 len(recent) >= self.policy.loop_repeat_threshold
                 and len(set(recent[-self.policy.loop_repeat_threshold :])) == 1
-                and name not in ("speak", "vote")
             ):
                 stats.loop_broken = True
                 step.observation = "repeated identical call; loop broken"
@@ -241,7 +249,7 @@ class AgentLoop:
                 break
 
             # --- terminal actions ----------------------------------------
-            if name in ("speak", "vote"):
+            if terminal:
                 blocked = self._guard_terminal(
                     name,
                     args,
@@ -321,7 +329,7 @@ class AgentLoop:
 
         # --- turn did not terminate on its own ---------------------------
         result.steps_used = step_no
-        if result.speech is None and result.vote is None:
+        if result.speech is None and result.vote is None and result.night_action is None:
             self._force_terminal(state, player_id, task, result, stats, messages, lookups)
         result.belief_after = belief.snapshot()
         result.recovery = stats.to_dict()
@@ -345,6 +353,10 @@ class AgentLoop:
 
     def _guard_terminal(self, name, args, *, state, player_id, belief, directives,
                         queried_players, queried_vote_rounds) -> dict | None:
+        if name.startswith("night_"):
+            # Night actions are private and have no spoken counterpart, so
+            # neither say/do consistency nor evidence enforcement applies.
+            return None
         if name == "speak":
             verdict = self.guard.check_evidence(
                 args.get("content", ""),
@@ -375,11 +387,10 @@ class AgentLoop:
         return None
 
     def _apply_terminal(self, state, player_id, name, args, step) -> dict | None:
-        action = (
-            {"name": "speak", "content": args["content"]}
-            if name == "speak"
-            else {"name": "vote", "target_id": args.get("target_id")}
-        )
+        if name == "speak":
+            action = {"name": "speak", "content": args["content"]}
+        else:
+            action = {"name": name, "target_id": args.get("target_id")}
         try:
             return state.apply_action(player_id, action)
         except ActionError as exc:
@@ -389,6 +400,13 @@ class AgentLoop:
             return None
 
     def _finish(self, result, name, args, applied, lookups, player_id) -> None:
+        if name.startswith("night_"):
+            result.night_action = {
+                "action": name,
+                "target": args.get("target_id"),
+                "outcome": (applied or {}).get("outcome"),
+            }
+            return
         if name == "speak":
             result.speech = args["content"]
             result.speech_order = applied.get("speech_order")
@@ -401,11 +419,12 @@ class AgentLoop:
     def _force_terminal(self, state, player_id, task, result, stats, messages, lookups):
         """Out of steps, or the loop broke. Ask once, then fall back."""
         stats.forced_terminal = True
+        wanted = {"speak": "speak", "vote": "vote"}.get(task, "night action")
         messages.append(
             {
                 "role": "user",
                 "content": "[guard] You are out of steps. Reply with exactly one "
-                f"`{'speak' if task == 'speak' else 'vote'}` call now.",
+                f"`{wanted}` call now.",
             }
         )
         response = call_model(
@@ -417,14 +436,15 @@ class AgentLoop:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
+        role = view_role(state, player_id)
         step = ReActStep(step=result.steps_used + 1, action="<forced>")
         if response is not None and response.tool_calls:
             result.prompt_tokens += response.prompt_tokens
             result.completion_tokens += response.completion_tokens
             call = response.tool_calls[0]
             try:
-                name, args = self.registry.validate(call.name, call.arguments)
-                if name in ("speak", "vote"):
+                name, args = self.registry.validate(call.name, call.arguments, role, task)
+                if self.registry.get(name) and self.registry.get(name).terminal:
                     applied = self._apply_terminal(state, player_id, name, args, step)
                     if applied is not None:
                         step.action, step.args = name, dict(args)
@@ -434,7 +454,14 @@ class AgentLoop:
             except SchemaError as exc:
                 step.observation = str(exc)
 
-        name, args = default_action(task, player_id)
+        if task == "night":
+            # Never a no-op for the pack: "the wolves killed nobody" would
+            # change the game, not just the agent. The engine hands back a
+            # seeded, reproducible target instead.
+            name, target = state.fallback_night_action(player_id)
+            args = {"target_id": target} if target is not None else {}
+        else:
+            name, args = default_action(task, player_id)
         stats.fallback_used = stats.fallback_used or "default_action"
         applied = self._apply_terminal(state, player_id, name, args, step)
         step.action = f"{name}(default)"
@@ -482,6 +509,10 @@ class AgentLoop:
                     {"payload_id": payload_id, "channel": "speech", "step": step,
                      "from": speech.player_id}
                 )
+
+
+def view_role(state, player_id) -> str:
+    return state.role_of(player_id).value
 
 
 def _thought_of(response) -> str:

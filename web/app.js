@@ -145,6 +145,7 @@ function currentRound() {
 
 function renderPlayers() {
   const L = t(), rnd = currentRound(), roles = state.log.ground_truth.roles || {};
+  const seatModels = (state.log.config || {}).seat_models || {};
   const attackers = new Set((state.log.planted_payloads || [])
     .filter((p) => p.round === rnd.round).map((p) => p.attacker));
   const items = [];
@@ -162,6 +163,7 @@ function renderPlayers() {
         <span class="flag attack">${attackers.has(pid) ? "&#9679;" : ""}</span>
         <span>${esc(L.seatId(pid))}</span>
         <span class="muted">${esc(L.role[roles[pid]] || roles[pid] || "?")}${human ? L.human : ""}</span>
+        <span class="muted seat-model">${esc(human ? "" : (seatModels[pid] || ""))}</span>
         <span style="margin-left:auto">
           ${exposed ? '<span class="attack">&#9888;</span>' : ""}
           ${persuaded ? '<span class="guard">&#9733;</span>' : ""}
@@ -177,6 +179,7 @@ function renderPlayers() {
   const counts = Object.entries(rnd.vote_counts || {})
     .map(([tgt, c]) => L.votes(tgt, c)).join("  ") || L.noVotes;
   el("round-summary").innerHTML =
+    `${L.hNight}: ${(rnd.night_turns || []).length} ${L.nightTurn}<br>` +
     `${L.sumDeaths}: ${(rnd.night_deaths || []).length
       ? rnd.night_deaths.map((p) => esc(L.seatId(p))).join(", ") : L.none}<br>` +
     `${L.sumTally}: ${esc(counts)}<br>` +
@@ -203,7 +206,10 @@ function renderTrace() {
     el("trace").innerHTML = `<div class="empty">${esc(L.tracePick)}</div>`;
     return;
   }
-  const turns = rnd.agents.filter((a) => a.player_id === state.player);
+  const turns = [
+    ...(rnd.night_turns || []).filter((a) => a.player_id === state.player),
+    ...rnd.agents.filter((a) => a.player_id === state.player),
+  ];
   el("trace-title").textContent = L.traceHeadFor(state.player, rnd.round);
   if (!turns.length) {
     el("trace").innerHTML = `<div class="empty">${esc(L.traceNone)}</div>`;
@@ -233,7 +239,8 @@ function renderTrace() {
     ).join(" ");
 
     return `<div style="margin-bottom:18px">
-      <div class="muted mono">${esc(L.task[turn.task] || turn.task)} &nbsp;
+      <div class="muted mono">${esc(turn.task === "night" ? L.nightTurn : (L.task[turn.task] || turn.task))} &nbsp;
+        <span class="pill">${esc(L.modelLabel)} ${esc(turn.model || "?")}</span> &nbsp;
         ${esc(L.steps(turn.steps_used))} &nbsp; ${esc(L.tokens(turn.total_tokens))}
         ${turn.retries ? `&nbsp; ${esc(L.retries(turn.retries))}` : ""}
         ${turn.forced_terminal ? `&nbsp; <span class="guard">${esc(L.forced)}</span>` : ""}
@@ -244,6 +251,11 @@ function renderTrace() {
       ${turn.speech ? `<div class="speech">${highlightPayloads(turn.speech)}</div>` : ""}
       ${turn.task === "vote"
         ? `<div class="mono">${esc(L.ballot)}<b>${turn.vote ? esc(L.seatId(turn.vote)) : esc(L.abstained)}</b></div>`
+        : ""}
+      ${turn.night_action
+        ? `<div class="mono">${esc(L.nightAction[turn.night_action.action] || turn.night_action.action)}
+           <b>${esc(L.nightOn(turn.night_action.target))}</b>
+           <span class="muted">${esc(turn.night_action.outcome || "")}</span></div>`
         : ""}
     </div>`;
   }).join("");

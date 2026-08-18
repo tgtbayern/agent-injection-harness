@@ -95,7 +95,9 @@ class GameState:
     night_victims: dict[int, list[int]] = field(default_factory=dict)
     winner: Team | None = None
     speech_cursor: int = 0
+    night_records: list[dict] = field(default_factory=list)
     _day: _DayVoting | None = None
+    _night: object | None = None
 
     # ---- construction -------------------------------------------------
 
@@ -160,6 +162,8 @@ class GameState:
             return self._apply_speak(player_id, str(action.get("content", "")))
         if name == "vote":
             return self._apply_vote(player_id, action.get("target_id"))
+        if name and name.startswith("night_"):
+            return self.apply_night_action(player_id, name, action.get("target_id"))
         raise ActionError(f"unknown terminal action: {name!r}")
 
     def _apply_speak(self, player_id: int, content: str) -> dict:
@@ -199,18 +203,83 @@ class GameState:
 
     # ---- phase transitions (driven by the runner, never by an agent) ----
 
-    def resolve_night(self) -> list[int]:
-        """Run the scripted night through the library, then open the day.
+    # ---- night, one agent turn at a time -------------------------------
 
-        Night decisions are deterministic and seeded (see `engine.night`): the
-        attack surface under study is the day phase, so model budget and
-        variance are spent there rather than on night play.
+    def begin_night(self):
+        """Open the night. Actors then act in role-priority order."""
+        from .night import NightPhase
+
+        self._night = NightPhase(self)
+        return self._night
+
+    def night_actor(self) -> int | None:
+        """Whose night turn it is, or None when the night is done."""
+        if self._night is None:
+            return None
+        return self._night.current_actor()
+
+    def night_options(self, player_id: int) -> dict:
+        """What this actor may do tonight -- the private half of their view."""
+        if self._night is None or self._night.current_actor() != player_id:
+            return {"actions": [], "targets": []}
+        role = self.role_of(player_id)
+        options = {
+            "actions": sorted(self._night.allowed_actions()),
+            "targets": self._night.legal_targets(player_id),
+        }
+        if role is Role.WITCH:
+            options["victims_tonight"] = self._night.victims_tonight()
+            options["antidote_available"] = not getattr(
+                self.game._get_player(to_engine_id(player_id)).role, "_heal_used", True
+            )
+            options["poison_available"] = not getattr(
+                self.game._get_player(to_engine_id(player_id)).role, "_kill_used", True
+            )
+        if role is Role.WOLF:
+            options["pack_votes_so_far"] = dict(self._night.wolf_intents)
+        return options
+
+    def apply_night_action(self, player_id: int, name: str, target_id) -> dict:
+        """The only way a night decision reaches the world."""
+        if self.phase is not Phase.NIGHT or self._night is None:
+            raise ActionError("it is not night")
+        try:
+            return self._night.submit(player_id, name, target_id)
+        except ValueError as exc:
+            raise ActionError(str(exc)) from exc
+
+    def fallback_night_action(self, player_id: int) -> tuple[str, int | None]:
+        """What an unsalvageable night turn does instead.
+
+        Seeded and reproducible, and never a no-op for the wolves: a failed
+        model call must not turn into "the pack chose not to kill tonight",
+        which would silently change the game rather than just the agent.
         """
-        from .night import run_night
+        if self._night is None:
+            return "night_skip", None
+        role = self.role_of(player_id)
+        legal = self._night.legal_targets(player_id)
+        if role is Role.WITCH or not legal:
+            return "night_skip", None
+        for candidate in self.setup.fallback_order:
+            if candidate in legal:
+                return ("night_kill" if role is Role.WOLF else "night_check"), candidate
+        return "night_skip", None
 
+    def end_night(self) -> list[int]:
+        """Resolve the night through the library and open the day."""
+        if self._night is None:
+            raise ActionError("the night was never opened")
         before = self.alive
-        checks = run_night(self)
-        self.seer_checks.extend(checks)
+        self._night.resolve()
+        for record in self._night.records:
+            if record["action"] == "night_check":
+                self.seer_checks.append(
+                    CheckRecord(record["round"], record["target"], bool(record["is_wolf"]))
+                )
+        self.night_records.extend(self._night.records)
+        self._night = None
+
         died = sorted(before - self.alive)
         for pid in died:
             self.deaths.append(DeathRecord(self.round, pid, self._cause_of(pid)))
@@ -220,6 +289,20 @@ class GameState:
             self.phase = Phase.DAY_SPEECH
             self.speech_cursor = 0
         return died
+
+    def resolve_night(self) -> list[int]:
+        """Play the whole night with the fallback policy and no agents.
+
+        This is what the engine's own tests use, and what the runner degrades to
+        if a night turn cannot be salvaged. Real games drive the night through
+        `begin_night` / `night_actor` / `apply_action` / `end_night` so that
+        every night decision is an agent's, with a trace to show for it.
+        """
+        self.begin_night()
+        while (actor := self.night_actor()) is not None:
+            name, target = self.fallback_night_action(actor)
+            self.apply_night_action(actor, name, target)
+        return self.end_night()
 
     def resolve_vote(self) -> int | None:
         """Count this round's votes through the library, then advance."""

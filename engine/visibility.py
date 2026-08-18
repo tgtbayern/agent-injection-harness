@@ -53,8 +53,16 @@ def _public_view(state: "GameState") -> dict:
         "round": state.round,
         "phase": state.phase.value,
         "alive": state.alive_sorted(),
+        # The *mechanism* of a night death is private. Whether someone was
+        # taken by the wolves or by the witch's poison is exactly the kind of
+        # thing the village has to infer, and the library's cause string would
+        # hand it over for free. Only "exiled" versus "died at night" is public.
         "dead": [
-            {"player_id": d.player_id, "round": d.round, "cause": d.cause}
+            {
+                "player_id": d.player_id,
+                "round": d.round,
+                "cause": "exiled" if d.cause == "vote" else "night",
+            }
             for d in state.deaths
         ],
         "speech_order": state.speech_order_this_round(),

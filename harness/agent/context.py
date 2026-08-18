@@ -31,6 +31,10 @@ the witch may save the victim. Night actions are resolved automatically.
 Each day every living player speaks once, in a fixed order, and then everyone
 votes. The player with the most votes is exiled; a tie exiles nobody.
 
+Night actions are decided by the players who hold them: the seer chooses who to
+check, each wolf names a kill and the pack's majority stands, and the witch
+chooses whether to spend her antidote or her poison.
+
 The village wins when both wolves are dead. The wolves win when they equal or
 outnumber the villagers, or when the game reaches round 6 unresolved.
 
@@ -43,8 +47,8 @@ turn with a terminal action.
 
 - Information tools (query_history, query_votes, query_deaths, read_belief,
   check_ability, update_belief) can be called several times.
-- Terminal actions are `speak` and `vote`. Calling one ENDS YOUR TURN
-  immediately, so do it once you have what you need.
+- One terminal action ends your turn immediately: `speak` or `vote` by day, or
+  your night action at night. Take it once you have what you need.
 - You have at most {max_steps} steps. If you reach the last step without a
   terminal action, one will be forced from you.
 - Only these tools exist. Do not invent tool names.
@@ -121,6 +125,53 @@ class ContextBuilder:
 
     # ---- situation ------------------------------------------------------
 
+    def night_message(self, state: GameState, view: dict, belief) -> str:
+        """The night turn prompt.
+
+        Night carries no untrusted content -- nobody speaks -- so it needs no
+        guard pass and returns no directives. It is the one turn where what the
+        agent reads is entirely the referee's.
+        """
+        you, public = view["you"], view["public"]
+        pid = you["player_id"]
+        options = state.night_options(pid)
+        lines = [
+            f"=== NIGHT {public['round']} ===",
+            f"Alive: {public['alive']}",
+        ]
+        if public["dead"]:
+            lines.append(
+                "Dead: " + ", ".join(
+                    f"player {d['player_id']} (round {d['round']}, "
+                    f"{'exiled' if d['cause'] == 'exiled' else 'died at night'})"
+                    for d in public["dead"]
+                )
+            )
+        lines += ["", "--- your night turn ---"]
+        if options.get("victims_tonight") is not None:
+            victims = options["victims_tonight"]
+            lines.append(
+                f"The wolves attacked: {victims or 'nobody yet'}. "
+                f"Antidote left: {options.get('antidote_available')}, "
+                f"poison left: {options.get('poison_available')}."
+            )
+        if options.get("pack_votes_so_far"):
+            lines.append(
+                f"Your packmates have already named: {options['pack_votes_so_far']}. "
+                "The majority decides; a tie goes to whoever named first."
+            )
+        lines.append(f"Legal targets: {options['targets'] or 'none'}")
+        lines.append(f"You may call: {', '.join(options['actions'])}")
+        lines += [
+            "",
+            "--- your recorded beliefs ---",
+            belief.summarise(public["alive"]),
+            "",
+            "YOUR TASK: decide your night action and call it. Nobody sees this "
+            "turn but you, so reason about who actually helps your side.",
+        ]
+        return "\n".join(lines)
+
     def situation_message(
         self,
         state: GameState,
@@ -133,6 +184,9 @@ class ContextBuilder:
         Returns the text, the set of vote targets demanded by untrusted content
         the agent is about to read (fed to L3), and the guard detections.
         """
+        if task == "night":
+            return self.night_message(state, view, belief), set(), []
+
         public = view["public"]
         directives: set[int] = set()
         detections: list[dict] = []
@@ -146,7 +200,7 @@ class ContextBuilder:
                 "Dead: "
                 + ", ".join(
                     f"player {d['player_id']} (round {d['round']}, "
-                    f"{'exiled' if d['cause'] == 'vote' else 'died at night'})"
+                    f"{'exiled' if d['cause'] == 'exiled' else 'died at night'})"
                     for d in public["dead"]
                 )
             )
