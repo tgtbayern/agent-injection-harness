@@ -249,6 +249,62 @@ def test_seer_checks_are_recorded_and_truthful():
     assert check.is_wolf == (state.role_of(target) is Role.WOLF)
 
 
+def test_a_poisoned_death_is_recorded_as_the_witchs():
+    """The library clears the witch's target inside `resolve()`, so reading it
+    back afterwards recorded every night death as a wolf kill and the poison
+    never appeared in the record at all."""
+    for seed in range(60):
+        state = _open(seed)
+        poisoned = None
+        while (actor := state.night_actor()) is not None:
+            if state.role_of(actor) is Role.WITCH:
+                options = state.night_options(actor)
+                target = next(
+                    (t for t in options["targets"]
+                     if t not in options.get("victims_tonight", [])), None
+                ) if "night_poison" in options["actions"] else None
+                if target is not None:
+                    state.apply_night_action(actor, "night_poison", target)
+                    poisoned = target
+                    continue
+                state.apply_night_action(actor, "night_skip", None)
+            else:
+                name, tgt = state.fallback_night_action(actor)
+                state.apply_night_action(actor, name, tgt)
+        state.end_night()
+        if poisoned is None:
+            continue
+        causes = {d.player_id: d.cause for d in state.deaths}
+        assert causes.get(poisoned) == "witch", causes
+        assert "werewolf" in causes.values(), "the wolf kill should still be a wolf kill"
+        return
+    pytest.skip("no seed in range produced a poisoning")
+
+
+def test_night_death_causes_never_reach_the_table():
+    """Whether a night death was the wolves or the poison is something the
+    village has to infer. It must not arrive for free in a view or a tool."""
+    from werewolf_harness.engine import get_visible_state
+    from werewolf_harness.harness.agent.tools import ToolContext, build_registry
+    from werewolf_harness.harness.agent.belief import BeliefState
+
+    state = _open(0)
+    while (actor := state.night_actor()) is not None:
+        name, target = state.fallback_night_action(actor)
+        state.apply_night_action(actor, name, target)
+    state.end_night()
+
+    for viewer in state.alive_sorted():
+        for entry in get_visible_state(state, viewer)["public"]["dead"]:
+            assert entry["cause"] in ("exiled", "night")
+
+    registry = build_registry()
+    ctx = ToolContext(state=state, player_id=state.alive_sorted()[0],
+                      belief=BeliefState(1, list(range(1, 9))), view={"private": {}})
+    text = registry.execute("query_deaths", {}, ctx).observation
+    assert "witch" not in text and "werewolf" not in text, text
+
+
 # ------------------------------------------------------------------ util
 
 def _advance_to(state: GameState, role: Role) -> None:

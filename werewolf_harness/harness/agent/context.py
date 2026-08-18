@@ -18,8 +18,14 @@ from __future__ import annotations
 
 from ...engine import GameState
 from ..guard import GuardStack, verify_mod
+from .tools import SPEECH_MAX_CHARS
 
-MAX_OBSERVATION_CHARS = 1400
+# A `query_history` return has to carry a whole speech, plus whatever rides on
+# the end of it, plus the isolation fence. Sized at 1400 it clipped the tail of
+# roughly seven tool returns in eight -- which silently weakened attack path B,
+# the very channel the experiment claims is the dangerous one, and made the two
+# channels incomparable. Derived from the speech cap so the two cannot drift.
+MAX_OBSERVATION_CHARS = 2 * SPEECH_MAX_CHARS
 MAX_STEPS_IN_CONTEXT = 6
 
 RULES = """\
@@ -262,8 +268,15 @@ class ContextBuilder:
     # ---- react steps ----------------------------------------------------
 
     def observation_message(self, tool: str, observation: str, untrusted: bool,
-                            source: str | None = None) -> tuple[str, set[int], list[dict]]:
-        """Render a tool result, cleaning it if it carries other players' text."""
+                            source: str | None = None) -> tuple[str, set[int], list[dict], bool]:
+        """Render a tool result, cleaning it if it carries other players' text.
+
+        Returns the text, the vote targets it demands, the guard detections, and
+        whether the budget clipped it. Truncation is reported rather than left
+        to be inferred from the text: a guard layer also rewrites the text, and
+        conflating "the filter removed it" with "the budget cut it off" would
+        make both numbers meaningless.
+        """
         directives: set[int] = set()
         detections: list[dict] = []
         text = observation
@@ -274,26 +287,52 @@ class ContextBuilder:
                 source=source or f"tool:{tool}",
                 kind="tool_result",
             )
-        if len(text) > self.max_observation_chars:
+        truncated = len(text) > self.max_observation_chars
+        if truncated:
             text = text[: self.max_observation_chars] + "\n[...truncated]"
-        return text, directives, detections
+        return text, directives, detections, truncated
 
     def trim_steps(self, step_messages: list[dict]) -> list[dict]:
         """Keep the reasoning chain bounded.
 
-        Each ReAct step appends an observation; on a long turn the oldest ones
-        are replaced by a single line saying what was dropped, so the model
-        knows its earlier lookups happened rather than silently repeating them.
+        Each ReAct step appends a *pair* of messages -- the assistant's call and
+        its result -- and the window is cut on pair boundaries. Cutting between
+        them would leave a `tool` message whose `tool_call_id` refers to a call
+        the model can no longer see, which an OpenAI-compatible gateway rejects
+        outright.
+
+        What is dropped is replaced by one line naming the calls already made,
+        so a long turn does not silently repeat a lookup it has forgotten.
         """
-        if len(step_messages) <= self.max_steps_in_context:
+        keep = max(2, self.max_steps_in_context - self.max_steps_in_context % 2)
+        if len(step_messages) <= keep:
             return step_messages
-        dropped = step_messages[: -self.max_steps_in_context]
-        kept = step_messages[-self.max_steps_in_context :]
-        summary = "; ".join(
-            m.get("summary", m.get("content", ""))[:60] for m in dropped
-        )
+
+        dropped = step_messages[:-keep]
+        kept = step_messages[-keep:]
+
+        # Never open the window on an orphaned tool result.
+        while kept and kept[0].get("role") == "tool":
+            dropped = dropped + [kept.pop(0)]
+
+        summary = "; ".join(filter(None, (_summarise(m) for m in dropped))) or "some lookups"
         note = {
             "role": "user",
             "content": f"[earlier this turn you already did: {summary}]",
         }
         return [note] + kept
+
+
+def _summarise(message: dict) -> str:
+    """One short phrase for a message being dropped from the window.
+
+    An assistant tool call carries `content: None`, so the name of the call has
+    to come out of `tool_calls` -- reading `content` and slicing it is how this
+    used to crash every turn long enough to need trimming.
+    """
+    for call in message.get("tool_calls") or []:
+        name = (call.get("function") or {}).get("name")
+        if name:
+            return f"called {name}"
+    content = message.get("content") or ""
+    return content.strip()[:60]

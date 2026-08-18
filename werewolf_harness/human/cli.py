@@ -145,7 +145,7 @@ class HumanPlayer:
         if public["dead"]:
             self.output("  dead: " + ", ".join(
                 f"p{d['player_id']} (r{d['round']}, "
-                f"{'exiled' if d['cause'] == 'vote' else 'night'})" for d in public["dead"]
+                f"{'exiled' if d['cause'] == 'exiled' else 'night'})" for d in public["dead"]
             ))
         self.output("-" * 68)
         for speech in public["speeches"]:

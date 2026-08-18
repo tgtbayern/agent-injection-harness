@@ -118,6 +118,19 @@ def test_the_human_only_ever_sees_their_own_private_facts(seat):
     )
 
 
+def test_an_exiled_player_is_not_shown_as_a_night_death():
+    """The public death record says "exiled" or "night"; the CLI used to test
+    it against the engine's internal "vote" and so labelled every exile a night
+    kill -- misinforming the one player whose judgement the baseline measures."""
+    log, console = _play(1, ["3"] * 400, seed=5)
+    exiles = [r["exiled"] for r in log["rounds"] if r.get("exiled")]
+    if not exiles:
+        pytest.skip("nobody was exiled in this game")
+    dead_lines = [line for line in console.lines if line.strip().startswith("dead:")]
+    assert dead_lines, "the human was never shown the dead list"
+    assert any("exiled" in line for line in dead_lines), dead_lines[-1]
+
+
 def test_belief_form_is_collected_once_per_round():
     log, console = _play(1, ["3"] * 400)
     rating_prompts = [p for p in console.prompts if p.strip().startswith("player")]

@@ -151,6 +151,12 @@ class Registry:
         return tool.fn(ctx, **args)
 
 
+# The longest a speech may be. Everything that has to carry a speech intact --
+# the context budget for tool returns, above all -- derives from this rather
+# than picking its own number and drifting.
+SPEECH_MAX_CHARS = 1200
+
+
 def speech_id(round_no: int, player_id: int) -> str:
     return f"r{round_no}p{player_id}"
 
@@ -392,7 +398,7 @@ def build_registry() -> Registry:
             Tool(
                 "speak",
                 "Say something to the table. ENDS YOUR TURN.",
-                {"content": {"type": "str", "max_len": 1200, "non_empty": True,
+                {"content": {"type": "str", "max_len": SPEECH_MAX_CHARS, "non_empty": True,
                              "description": "what you say out loud"}},
                 _speak,
                 terminal=True,

@@ -305,7 +305,7 @@ class AgentLoop:
             elif name == "query_votes":
                 queried_vote_rounds.add(args["round"])
 
-            observation, new_directives, dets = self.context.observation_message(
+            observation, new_directives, dets, clipped = self.context.observation_message(
                 name, tool_result.observation, tool_result.untrusted,
                 source=f"query_history:player_{args.get('player_id')}"
                 if name == "query_history" else None,
@@ -316,11 +316,21 @@ class AgentLoop:
             step.observation = observation
 
             if tool_result.untrusted:
-                found = self.payload_detector(tool_result.observation)
-                for payload_id in found:
+                for payload_id in self.payload_detector(tool_result.observation):
                     step.injected = True
+                    # Detection runs on the raw tool return so a filtered
+                    # payload still counts as delivered -- otherwise guard arms
+                    # would have different denominators and could not be
+                    # compared. `intact` separately records whether the agent
+                    # was shown the whole thing, since the context budget can
+                    # clip a long return's tail.
                     result.read_payloads.append(
-                        {"payload_id": payload_id, "channel": "tool_return", "step": step_no}
+                        {
+                            "payload_id": payload_id,
+                            "channel": "tool_return",
+                            "step": step_no,
+                            "clipped": clipped,
+                        }
                     )
 
             result.react_trace.append(step.to_dict())
@@ -505,9 +515,11 @@ class AgentLoop:
             if speech.round != state.round or speech.player_id == player_id:
                 continue
             for payload_id in self.payload_detector(speech.content):
+                # The situation message carries speeches whole, so a payload
+                # read through the speech channel is always intact.
                 result.read_payloads.append(
                     {"payload_id": payload_id, "channel": "speech", "step": step,
-                     "from": speech.player_id}
+                     "from": speech.player_id, "clipped": False}
                 )
 
 

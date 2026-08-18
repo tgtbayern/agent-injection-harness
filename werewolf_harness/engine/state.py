@@ -271,18 +271,26 @@ class GameState:
         if self._night is None:
             raise ActionError("the night was never opened")
         before = self.alive
+        records = list(self._night.records)
         self._night.resolve()
-        for record in self._night.records:
+        for record in records:
             if record["action"] == "night_check":
                 self.seer_checks.append(
                     CheckRecord(record["round"], record["target"], bool(record["is_wolf"]))
                 )
-        self.night_records.extend(self._night.records)
+        self.night_records.extend(records)
         self._night = None
 
+        # Attribute deaths from what was actually submitted tonight. Asking the
+        # library afterwards does not work: it clears the witch's target inside
+        # `resolve()`, so every night death read back as a wolf kill and the
+        # poison never appeared in the record at all.
+        poisoned = {r["target"] for r in records if r["action"] == "night_poison"}
         died = sorted(before - self.alive)
         for pid in died:
-            self.deaths.append(DeathRecord(self.round, pid, self._cause_of(pid)))
+            self.deaths.append(
+                DeathRecord(self.round, pid, "witch" if pid in poisoned else "werewolf")
+            )
         self.night_victims[self.round] = died
         self._check_end()
         if self.phase is not Phase.OVER:
@@ -334,16 +342,6 @@ class GameState:
                 self.phase = Phase.NIGHT
                 self.speech_cursor = 0
         return exiled
-
-    def _cause_of(self, player_id: int) -> str:
-        """Recover a death cause from the library's event stream is overkill;
-        night deaths are either the wolf kill or the witch's poison."""
-        eng = to_engine_id(player_id)
-        witch_kill = None
-        for p in self.game.players:
-            if p.role and p.role.name == "witch":
-                witch_kill = getattr(p.role, "_kill_target_id", None)
-        return "witch" if witch_kill == eng else "werewolf"
 
     def _check_end(self) -> None:
         """Win detection is the library's `_check_game_over`."""
