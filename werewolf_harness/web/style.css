@@ -265,3 +265,24 @@ body[data-lang="zh"] h2 { text-transform: none; letter-spacing: 0.04em; }
 .said { margin-top: 2px; color: var(--text); font-family: var(--sans); font-size: 13px; }
 .pline.muted, .pline.dawn { padding-left: 6px; }
 .pline.dawn { color: var(--muted); border-top: 1px dotted var(--line); margin-top: 4px; padding-top: 5px; }
+
+/* A seat mentioned inside a speech, versus the seat doing the speaking. No new
+   hue: the distinction is weight and an underline, so the one saturated colour
+   stays reserved for injection. */
+.ref { border-bottom: 1px dotted var(--muted); }
+.ref.self { border-bottom: 0; font-weight: 600; background: var(--surface-2); padding: 0 3px; border-radius: 2px; }
+
+/* Scripted runs, said plainly. Belief yellow rather than attack red: this is a
+   caveat about what you are looking at, not something going wrong in it. */
+.mockbar {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--belief);
+  border-radius: 3px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--muted);
+  max-width: 90ch;
+}
+.mockbar b { color: var(--belief); font-weight: 600; }

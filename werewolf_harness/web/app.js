@@ -101,7 +101,12 @@ async function loadGame(id) {
 
 function renderMeta() {
   const L = t(), l = state.log, o = l.outcome;
+  // A scripted run must never be mistaken for model behaviour. The model name
+  // alone is easy to skim past, so it gets said outright.
+  const seats = Object.values((l.config || {}).seat_models || {});
+  const scripted = seats.length ? seats.every((m) => m === "mock") : l.config.model === "mock";
   el("game-meta").innerHTML =
+    (scripted ? `<div class="mockbar"><b>${esc(L.mockBadge)}</b> ${esc(L.mockNote)}</div>` : "") +
     `${L.metaGame} <b>${esc(l.game_id)}</b> &nbsp; ${L.metaSeed}=${l.seed} &nbsp; ` +
     `${L.metaModel}=${esc(l.config.model)} &nbsp; ` +
     `${L.metaGuard}=${esc(guardLabel(l.config))}${l.config.evidence_forced ? "+E" : ""} &nbsp; ` +
@@ -172,7 +177,8 @@ function renderPhases() {
         ? `<span class="attack"> · ${esc(L.carriedPayload)}</span>` : "";
       const head = `<b>#${a.speech_order + 1} ${esc(L.seatId(a.player_id))}</b> ` +
                    `<span class="muted">${seatRole(a.player_id)}</span>${flag}`;
-      return turnRecord(a, `${head}<div class="said">${highlightPayloads(a.speech || "")}</div>`);
+      const said = markSeatRefs(highlightPayloads(a.speech || ""), a.player_id);
+      return turnRecord(a, `${head}<div class="said">${said}</div>`);
     }).join("") || `<div class="pline muted">-</div>`;
 
   const voteRows = rnd.agents.filter((a) => a.task === "vote").map((a) => {
@@ -203,6 +209,34 @@ function renderPhases() {
 function seatRole(pid) {
   const L = t(), roles = state.log.ground_truth.roles || {};
   return esc(L.role[roles[pid]] || roles[pid] || "?");
+}
+
+/* Mark seat references inside a speech.
+ *
+ * A record whose entire content is "who said what about whom" has to make the
+ * two kinds of number distinguishable: the seat that is speaking, and the seats
+ * it is speaking about. Read quickly, "2 号 女巫: ...where I stand on player 6"
+ * otherwise scans as a claim to be player 6.
+ *
+ * Applied to the rendered HTML, but only to the parts between tags -- the
+ * payload highlighter has already inserted <mark> elements with title
+ * attributes, and rewriting inside those would corrupt them.
+ */
+function markSeatRefs(html, self) {
+  return html.split(/(<[^>]*>)/).map((part) => {
+    if (part.startsWith("<")) return part;
+    const wrap = (text, n) =>
+      `<span class="ref${Number(n) === self ? " self" : ""}">${text}</span>`;
+    return part
+      // "player 6" / "p6" / "6 号" -- the whole phrase reads as one reference
+      .replace(/\b(?:player\s*|p)(\d)\b|(\d)\s*号/gi, (m, a, b) => {
+        const n = Number(a || b);
+        return n >= 1 && n <= 8 ? wrap(m, n) : m;
+      })
+      // "vote 6" -- wrap the number only, so the verb stays plain
+      .replace(/\b(vote\s+(?:for\s+)?)(\d)\b/gi, (m, lead, d) =>
+        Number(d) >= 1 && Number(d) <= 8 ? lead + wrap(d, d) : m);
+  }).join("");
 }
 
 /* One line of the record, opening into that turn's reasoning. */
