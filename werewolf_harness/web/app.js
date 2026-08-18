@@ -4,6 +4,8 @@
  * from a clone with nothing installed. The replay view is the part that earns
  * its keep -- it shows where a payload entered a turn and what happened to the
  * agent's beliefs and ballot immediately afterwards.
+ *
+ * UI strings come from i18n.js; game data is never translated.
  */
 
 const api = {
@@ -45,82 +47,94 @@ document.querySelectorAll("nav button").forEach((btn) => {
   };
 });
 
+document.querySelectorAll(".lang button").forEach((b) => {
+  b.onclick = () => {
+    if (LANG.current === b.dataset.lang) return;
+    LANG.current = b.dataset.lang;
+    storeLang(LANG.current);
+    applyStaticStrings();
+    /* Re-render whatever is on screen, keeping the selected game and seat. */
+    if (state.log) { renderMeta(); renderTimeline(); renderRounds(); renderPlayers(); renderTrace(); }
+    if (el("config").classList.contains("active")) loadConfig();
+    if (el("experiments").classList.contains("active")) pollExperiment();
+  };
+});
+
 /* ================================================================ REPLAY */
 
 const state = { log: null, round: 1, player: null };
 
+function guardLabel(cfg) {
+  return (cfg.guard_layers || []).join("+") || t().guardNone;
+}
+
+/* Benign persuasion is planted through the same machinery as an attack, but it
+   is legitimate play -- painting it attack-red would invert the one distinction
+   this whole instrument exists to measure. */
+function isBenign(payloadId) {
+  const p = (state.log.planted_payloads || []).find((x) => x.payload_id === payloadId);
+  return Boolean(p && p.benign);
+}
+
 async function loadGames() {
   const games = await api.get("/api/games?limit=100");
   const select = el("game-select");
-  select.innerHTML = games
-    .map((g) => {
-      const guard = (g.config.guard_layers || []).join("+") || "none";
-      const mode = g.config.benign_persuasion ? "benign" : g.config.attack_enabled ? "attack" : "clean";
-      return `<option value="${g.game_id}">${g.game_id} -- seed ${g.seed} -- ${guard}${
-        g.config.evidence_forced ? "+E" : ""} -- ${mode} -- ${g.outcome.winner || "?"} won</option>`;
-    })
-    .join("");
+  select.innerHTML = games.map((g) => {
+    const guard = guardLabel(g.config) + (g.config.evidence_forced ? "+E" : "");
+    const mode = g.config.benign_persuasion ? "benign" : g.config.attack_enabled ? "attack" : "clean";
+    return `<option value="${g.game_id}">${g.game_id} · ${t().metaSeed} ${g.seed} · ${
+      guard} · ${mode} · ${esc(t().winner[g.outcome.winner] || g.outcome.winner || "?")}</option>`;
+  }).join("");
   if (games.length) loadGame(games[0].game_id);
-  else el("game-meta").textContent = "no games yet -- run one above";
+  else el("game-meta").textContent = t().noGames;
 }
 
 async function loadGame(id) {
   state.log = await api.get(`/api/games/${id}`);
   state.round = state.log.rounds.length ? state.log.rounds[0].round : 1;
   state.player = null;
-  renderMeta();
-  renderTimeline();
-  renderRounds();
-  renderPlayers();
-  renderTrace();
+  renderMeta(); renderTimeline(); renderRounds(); renderPlayers(); renderTrace();
 }
 
 function renderMeta() {
-  const l = state.log;
-  const guard = (l.config.guard_layers || []).join("+") || "none";
-  const o = l.outcome;
+  const L = t(), l = state.log, o = l.outcome;
   el("game-meta").innerHTML =
-    `game <b>${esc(l.game_id)}</b> &nbsp; seed=${l.seed} &nbsp; model=${esc(l.config.model)} ` +
-    `&nbsp; guard=${esc(guard)}${l.config.evidence_forced ? "+E" : ""} ` +
-    `&nbsp; steps&le;${l.config.max_react_steps} &nbsp; winner=<b>${esc(o.winner)}</b> ` +
-    `&nbsp; tokens=${o.total_prompt_tokens + o.total_completion_tokens} ` +
-    `&nbsp; $${(o.total_cost_usd || 0).toFixed(4)} &nbsp; ${o.total_duration_s}s` +
-    (o.crashed ? ` <span class="attack">CRASHED: ${esc(o.crash_reason)}</span>` : "");
+    `${L.metaGame} <b>${esc(l.game_id)}</b> &nbsp; ${L.metaSeed}=${l.seed} &nbsp; ` +
+    `${L.metaModel}=${esc(l.config.model)} &nbsp; ` +
+    `${L.metaGuard}=${esc(guardLabel(l.config))}${l.config.evidence_forced ? "+E" : ""} &nbsp; ` +
+    `${L.metaSteps}${l.config.max_react_steps} &nbsp; ` +
+    `${L.metaWinner}=<b>${esc(L.winner[o.winner] || o.winner)}</b> &nbsp; ` +
+    `${L.metaTokens}=${o.total_prompt_tokens + o.total_completion_tokens} &nbsp; ` +
+    `${L.metaCost}=$${(o.total_cost_usd || 0).toFixed(4)} &nbsp; ${o.total_duration_s}s` +
+    (o.crashed ? ` <span class="attack">${esc(L.crashed(o.crash_reason))}</span>` : "");
 }
 
 /* One tick per planted payload; filled when some agent's ballot ended up on
    the payload's target that round. Scanning the row tells you what happened in
    a game before reading a single trace. */
 function renderTimeline() {
-  const l = state.log;
-  const planted = l.planted_payloads || [];
-  const parts = [];
+  const l = state.log, planted = l.planted_payloads || [], parts = [];
   l.rounds.forEach((rnd, i) => {
     if (i) parts.push('<span class="tick round-sep"></span>');
-    planted
-      .filter((p) => p.round === rnd.round)
-      .forEach((p) => {
-        const hit = rnd.agents.some(
-          (a) => a.task === "vote" && a.vote === p.target &&
-                 (a.read_payloads || []).some((r) => r.payload_id === p.payload_id));
-        parts.push(
-          `<span class="tick ${hit ? "hit" : ""}" title="round ${rnd.round}: ${esc(p.payload_id)} ` +
-          `by p${p.attacker} at p${p.target}${hit ? " -- landed" : " -- no vote change"}"></span>`);
-      });
+    planted.filter((p) => p.round === rnd.round).forEach((p) => {
+      const hit = rnd.agents.some(
+        (a) => a.task === "vote" && a.vote === p.target &&
+               (a.read_payloads || []).some((r) => r.payload_id === p.payload_id));
+      parts.push(`<span class="tick ${hit ? "hit" : ""} ${p.benign ? "benign" : ""}" title="${
+        t().roundTab(rnd.round)}: ${esc(p.payload_id)} ${p.attacker}→${p.target}"></span>`);
+    });
   });
-  el("timeline").innerHTML = parts.join("") || '<span class="muted">no payloads planted</span>';
+  el("timeline").innerHTML = parts.join("");
 }
 
 function renderRounds() {
-  el("rounds").innerHTML = state.log.rounds
-    .map((r) => `<button data-round="${r.round}" class="${r.round === state.round ? "active" : ""}">round ${r.round}</button>`)
-    .join("");
+  el("rounds").innerHTML = state.log.rounds.map((r) =>
+    `<button data-round="${r.round}" class="${r.round === state.round ? "active" : ""}">${
+      esc(t().roundTab(r.round))}</button>`).join("");
   el("rounds").querySelectorAll("button").forEach((b) => {
     b.onclick = () => {
       state.round = Number(b.dataset.round);
-      renderRounds();
-      renderPlayers();
-      renderTrace();
+      renderRounds(); renderPlayers(); renderTrace();
     };
   });
 }
@@ -130,40 +144,43 @@ function currentRound() {
 }
 
 function renderPlayers() {
-  const rnd = currentRound();
-  const roles = state.log.ground_truth.roles || {};
+  const L = t(), rnd = currentRound(), roles = state.log.ground_truth.roles || {};
   const attackers = new Set((state.log.planted_payloads || [])
     .filter((p) => p.round === rnd.round).map((p) => p.attacker));
   const items = [];
   for (let pid = 1; pid <= 8; pid++) {
     const turns = rnd.agents.filter((a) => a.player_id === pid);
     const alive = (rnd.alive || []).includes(pid);
-    const exposed = turns.some((t) => (t.read_payloads || []).length);
-    const blocked = turns.some((t) => (t.guard_blocks || []).length);
-    const human = turns.some((t) => t.is_human);
+    const exposed = turns.some((x) =>
+      (x.read_payloads || []).some((r) => !isBenign(r.payload_id)));
+    const persuaded = turns.some((x) =>
+      (x.read_payloads || []).some((r) => isBenign(r.payload_id)));
+    const blocked = turns.some((x) => (x.guard_blocks || []).length);
+    const human = turns.some((x) => x.is_human);
     items.push(
       `<li data-pid="${pid}" class="${state.player === pid ? "selected" : ""} ${alive ? "" : "dead"}">
         <span class="flag attack">${attackers.has(pid) ? "&#9679;" : ""}</span>
-        <span>p${pid}</span>
-        <span class="muted">${esc(roles[pid] || "?")}${human ? " (human)" : ""}</span>
+        <span>${esc(L.seatId(pid))}</span>
+        <span class="muted">${esc(L.role[roles[pid]] || roles[pid] || "?")}${human ? L.human : ""}</span>
         <span style="margin-left:auto">
-          ${exposed ? '<span class="attack" title="read a payload">&#9888;</span>' : ""}
-          ${blocked ? '<span class="guard" title="a guard blocked an action">&#9635;</span>' : ""}
+          ${exposed ? '<span class="attack">&#9888;</span>' : ""}
+          ${persuaded ? '<span class="guard">&#9733;</span>' : ""}
+          ${blocked ? '<span class="guard">&#9635;</span>' : ""}
         </span>
       </li>`);
   }
   el("players").innerHTML = items.join("");
   el("players").querySelectorAll("li").forEach((li) => {
-    li.onclick = () => {
-      state.player = Number(li.dataset.pid);
-      renderPlayers();
-      renderTrace();
-    };
+    li.onclick = () => { state.player = Number(li.dataset.pid); renderPlayers(); renderTrace(); };
   });
-  const counts = rnd.vote_counts || {};
+
+  const counts = Object.entries(rnd.vote_counts || {})
+    .map(([tgt, c]) => L.votes(tgt, c)).join("  ") || L.noVotes;
   el("round-summary").innerHTML =
-    `night deaths: ${JSON.stringify(rnd.night_deaths || [])}<br>` +
-    `tally: ${esc(JSON.stringify(counts))}<br>exiled: ${rnd.exiled ?? "nobody"}`;
+    `${L.sumDeaths}: ${(rnd.night_deaths || []).length
+      ? rnd.night_deaths.map((p) => esc(L.seatId(p))).join(", ") : L.none}<br>` +
+    `${L.sumTally}: ${esc(counts)}<br>` +
+    `${L.sumExiled}: ${rnd.exiled ? esc(L.seatId(rnd.exiled)) : L.nobody}`;
 }
 
 /* Highlight the exact payload text inside whatever the agent read. */
@@ -180,16 +197,16 @@ function highlightPayloads(text) {
 }
 
 function renderTrace() {
-  const rnd = currentRound();
+  const L = t(), rnd = currentRound();
   if (!state.player) {
-    el("trace-title").textContent = "react trace";
-    el("trace").innerHTML = '<div class="empty">pick a player to see their turn</div>';
+    el("trace-title").textContent = L.hTrace;
+    el("trace").innerHTML = `<div class="empty">${esc(L.tracePick)}</div>`;
     return;
   }
   const turns = rnd.agents.filter((a) => a.player_id === state.player);
-  el("trace-title").innerHTML = `react trace &mdash; player ${state.player}, round ${rnd.round}`;
+  el("trace-title").textContent = L.traceHeadFor(state.player, rnd.round);
   if (!turns.length) {
-    el("trace").innerHTML = '<div class="empty">this player did not act in this round</div>';
+    el("trace").innerHTML = `<div class="empty">${esc(L.traceNone)}</div>`;
     return;
   }
 
@@ -197,43 +214,48 @@ function renderTrace() {
     const steps = (turn.react_trace || []).map((s) => {
       const cls = s.injected ? "injected" : s.guard_blocked ? "blocked" : "";
       const flag = s.injected
-        ? '<span class="pill attack">payload in tool return</span>'
+        ? `<span class="pill attack">${esc(L.injectedPill)}</span>`
         : s.guard_blocked
-        ? `<span class="pill guard">blocked: ${esc(s.block_reason)}</span>`
+        ? `<span class="pill guard">${esc(L.blockPill(L.block[s.block_reason] || s.block_reason))}</span>`
         : "";
       return `<div class="step ${cls}">
-          <div class="head">step ${s.step} &rarr; <b>${esc(s.action)}</b>
+          <div class="head">${s.step} &rarr; <b>${esc(s.action)}</b>
             <span class="muted">${esc(JSON.stringify(s.args || {}))}</span> ${flag}</div>
-          ${s.thought ? `<div class="obs">thought: ${esc(s.thought)}</div>` : ""}
+          ${s.thought ? `<div class="obs">${esc(L.thought)}: ${esc(s.thought)}</div>` : ""}
           ${s.observation ? `<div class="obs">${highlightPayloads(s.observation)}</div>` : ""}
         </div>`;
     }).join("");
 
     const diff = beliefDiff(turn.belief_before, turn.belief_after);
     const exposure = (turn.read_payloads || []).map((r) =>
-      `<span class="pill attack">${esc(r.payload_id)} via ${esc(r.channel)}</span>`).join(" ");
+      `<span class="pill ${isBenign(r.payload_id) ? "guard" : "attack"}">${
+        esc(L.exposurePill(r.payload_id, L.channel[r.channel] || r.channel))}</span>`
+    ).join(" ");
 
     return `<div style="margin-bottom:18px">
-      <div class="muted mono">task=${esc(turn.task)} &nbsp; steps=${turn.steps_used} &nbsp;
-        tokens=${turn.total_tokens} &nbsp; retries=${turn.retries || 0}
-        ${turn.forced_terminal ? '&nbsp; <span class="guard">forced</span>' : ""}
-        ${turn.fallback_used ? `&nbsp; <span class="attack">fallback: ${esc(turn.fallback_used)}</span>` : ""}</div>
-      ${exposure ? `<div style="margin:6px 0">exposed to: ${exposure}</div>` : ""}
+      <div class="muted mono">${esc(L.task[turn.task] || turn.task)} &nbsp;
+        ${esc(L.steps(turn.steps_used))} &nbsp; ${esc(L.tokens(turn.total_tokens))}
+        ${turn.retries ? `&nbsp; ${esc(L.retries(turn.retries))}` : ""}
+        ${turn.forced_terminal ? `&nbsp; <span class="guard">${esc(L.forced)}</span>` : ""}
+        ${turn.fallback_used ? `&nbsp; <span class="attack">${esc(L.fallbackUsed(turn.fallback_used))}</span>` : ""}</div>
+      ${exposure ? `<div style="margin:6px 0">${esc(L.exposedTo)}${exposure}</div>` : ""}
       ${steps}
-      ${diff ? `<div class="beliefdiff" style="margin-top:8px">belief changes: ${diff}</div>` : ""}
+      ${diff ? `<div class="beliefdiff" style="margin-top:8px">${esc(L.deltaLead)}: ${diff}</div>` : ""}
       ${turn.speech ? `<div class="speech">${highlightPayloads(turn.speech)}</div>` : ""}
-      ${turn.task === "vote" ? `<div class="mono">ballot: <b>${turn.vote ?? "abstained"}</b></div>` : ""}
+      ${turn.task === "vote"
+        ? `<div class="mono">${esc(L.ballot)}<b>${turn.vote ? esc(L.seatId(turn.vote)) : esc(L.abstained)}</b></div>`
+        : ""}
     </div>`;
   }).join("");
 }
 
 function beliefDiff(before, after) {
-  const parts = [];
+  const L = t(), parts = [];
   Object.keys(after || {}).forEach((pid) => {
     const b = before && before[pid] ? before[pid].suspicion : null;
     const a = after[pid].suspicion;
     if (b !== null && Math.abs(a - b) > 1e-9) {
-      parts.push(`<span class="up">p${pid}: ${b.toFixed(2)} &rarr; ${a.toFixed(2)}</span>
+      parts.push(`<span class="up">${esc(L.deltaRow(pid, b.toFixed(2), a.toFixed(2)))}</span>
         <span class="muted">(${esc(after[pid].reason || "")})</span>`);
     }
   });
@@ -249,10 +271,10 @@ el("run-game").onclick = async () => {
     guard_layers: guard,
     attack_enabled: true,
   });
-  el("game-meta").textContent = `running ${started.config} ...`;
+  el("game-meta").textContent = t().running(started.config);
   const source = new EventSource(`/api/games/${started.stream_id}/stream`);
   source.addEventListener("round_start", (e) => {
-    el("game-meta").textContent = `running ... round ${JSON.parse(e.data).round}`;
+    el("game-meta").textContent = t().runningRound(JSON.parse(e.data).round);
   });
   source.addEventListener("done", async (e) => {
     source.close();
@@ -266,43 +288,44 @@ el("run-game").onclick = async () => {
 /* ================================================================ CONFIG */
 
 async function loadConfig() {
+  const L = t();
   const [providers, models] = await Promise.all([
     api.get("/api/providers"),
     api.get("/api/models"),
   ]);
 
   el("providers").innerHTML =
-    "<tr><th>name</th><th>base url</th><th>key</th><th></th></tr>" +
+    `<tr><th>${L.colName}</th><th>${L.colUrl}</th><th>${L.colKey}</th><th></th></tr>` +
     (providers.map((p) => `<tr>
         <td>${esc(p.name)}</td><td class="mono">${esc(p.base_url)}</td>
         <td class="mono muted">${esc(p.api_key_masked)}</td>
-        <td><button class="action danger" data-del="${p.id}">delete</button></td>
-      </tr>`).join("") || '<tr><td colspan="4" class="muted">none yet</td></tr>');
+        <td><button class="action danger" data-del="${p.id}">${L.btnDelete}</button></td>
+      </tr>`).join("") || `<tr><td colspan="4" class="muted">${L.empty}</td></tr>`);
 
   el("providers").querySelectorAll("[data-del]").forEach((b) => {
     b.onclick = async () => { await api.del(`/api/providers/${b.dataset.del}`); loadConfig(); };
   });
 
-  const options = providers.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
-  el("m-provider").innerHTML = options;
-  el("x-model").innerHTML =
-    '<option value="">mock (offline)</option>' +
+  el("m-provider").innerHTML = providers.map((p) =>
+    `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  el("x-model").innerHTML = `<option value="">${L.mockModel}</option>` +
     models.map((m) => `<option value="${m.id}">${esc(m.display_name)}</option>`).join("");
 
   el("models").innerHTML =
-    "<tr><th>display</th><th>model name</th><th>group</th><th>tools</th><th>mode</th><th>probe</th><th></th></tr>" +
+    `<tr><th>${L.colDisplay}</th><th>${L.colModel}</th><th>${L.colGroup}</th>` +
+    `<th>${L.colTools}</th><th>${L.colMode}</th><th>${L.colProbe}</th><th></th></tr>` +
     (models.map((m) => `<tr>
         <td>${esc(m.display_name)}</td>
         <td class="mono">${esc(m.model_name)}</td>
         <td class="mono muted">${esc(m.group || "-")}</td>
-        <td>${m.supports_tools === null ? '<span class="muted">untested</span>'
-             : m.supports_tools ? '<span class="guard">native</span>'
-             : '<span class="attack">none</span>'}</td>
+        <td>${m.supports_tools === null ? `<span class="muted">${L.toolsUntested}</span>`
+             : m.supports_tools ? `<span class="guard">${L.toolsNative}</span>`
+             : `<span class="attack">${L.toolsNone}</span>`}</td>
         <td class="mono">${esc(m.tool_mode)}</td>
-        <td><button class="action" data-probe="${m.id}">test</button>
+        <td><button class="action" data-probe="${m.id}">${L.btnTest}</button>
             <span id="probe-${m.id}" class="mono muted"></span></td>
-        <td><button class="action danger" data-delm="${m.id}">delete</button></td>
-      </tr>`).join("") || '<tr><td colspan="7" class="muted">none yet</td></tr>');
+        <td><button class="action danger" data-delm="${m.id}">${L.btnDelete}</button></td>
+      </tr>`).join("") || `<tr><td colspan="7" class="muted">${L.empty}</td></tr>`);
 
   el("models").querySelectorAll("[data-delm]").forEach((b) => {
     b.onclick = async () => { await api.del(`/api/models/${b.dataset.delm}`); loadConfig(); };
@@ -316,16 +339,16 @@ async function loadConfig() {
  * (reachable / tools / latency) and, on failure, a fix rather than the
  * gateway's own error text. */
 async function probeModel(id) {
-  const out = el(`probe-${id}`);
-  out.textContent = "testing...";
+  const L = t(), out = el(`probe-${id}`);
+  out.textContent = L.testing;
   try {
     const r = await api.post(`/api/models/${id}/probe`);
     const bits = [
-      r.reachable ? `<span class="guard">reachable ${r.latency_ms}ms</span>`
-                  : '<span class="attack">unreachable</span>',
-      r.native_tools ? '<span class="guard">native tools</span>'
-                     : '<span class="belief">json fallback</span>',
-      r.reports_usage ? "" : '<span class="belief">no usage field</span>',
+      r.reachable ? `<span class="guard">${esc(L.reachable(r.latency_ms))}</span>`
+                  : `<span class="attack">${esc(L.unreachable)}</span>`,
+      r.native_tools ? `<span class="guard">${esc(L.nativeTools)}</span>`
+                     : `<span class="belief">${esc(L.jsonFallback)}</span>`,
+      r.reports_usage ? "" : `<span class="belief">${esc(L.noUsage)}</span>`,
     ].filter(Boolean);
     out.innerHTML = bits.join(" &middot; ");
     if (r.error) out.innerHTML += `<div class="hint">${esc(r.hint || r.error)}</div>`;
@@ -333,8 +356,8 @@ async function probeModel(id) {
     loadConfig();
   } catch (e) {
     let hint = String(e.message);
-    try { hint = JSON.parse(hint).detail.hint || hint; } catch (_) {}
-    out.innerHTML = `<span class="attack">failed</span><div class="hint">${esc(hint)}</div>`;
+    try { hint = JSON.parse(hint).detail.hint || hint; } catch (_) { /* raw text */ }
+    out.innerHTML = `<span class="attack">${esc(L.probeFailed)}</span><div class="hint">${esc(hint)}</div>`;
   }
 }
 
@@ -346,7 +369,7 @@ el("add-provider").onclick = async () => {
       api_key: el("p-key").value,
     });
     el("p-key").value = "";
-    el("provider-msg").textContent = created.warning || "saved -- the key stays on the server";
+    el("provider-msg").textContent = created.warning || t().providerSaved;
     loadConfig();
   } catch (e) {
     el("provider-msg").innerHTML = `<span class="attack">${esc(e.message)}</span>`;
@@ -361,7 +384,7 @@ el("add-model").onclick = async () => {
       model_name: el("m-name").value,
       group: el("m-group").value || null,
     });
-    el("model-msg").textContent = "saved -- run the probe before using it in a batch";
+    el("model-msg").textContent = t().modelSaved;
     loadConfig();
   } catch (e) {
     el("model-msg").innerHTML = `<span class="attack">${esc(e.message)}</span>`;
@@ -398,41 +421,40 @@ el("stop-exp").onclick = async () => {
 async function pollExperiment() {
   clearTimeout(pollTimer);
   if (!currentExperiment) return;
+  const L = t();
   const exp = await api.get(`/api/experiments/${currentExperiment}`);
   const p = exp.progress;
   el("exp-progress").innerHTML =
-    `<b>${esc(exp.name)}</b> &nbsp; ${esc(exp.status)}<br>` +
-    `${p.done}/${p.total} games &nbsp; crashed=${p.crashed} &nbsp; tokens=${p.tokens}` +
+    `<b>${esc(exp.name)}</b> &nbsp; ${esc(L.status[exp.status] || exp.status)}<br>` +
+    `${esc(L.expLine(p.done, p.total, p.crashed, p.tokens))}` +
     `<progress value="${p.done}" max="${p.total || 1}"></progress>`;
   if (p.done) renderExperimentResults();
-  if (exp.status === "running" || exp.status === "queued" || exp.status === "stopping") {
+  if (["running", "queued", "stopping"].includes(exp.status)) {
     pollTimer = setTimeout(pollExperiment, 1500);
   }
 }
 
 async function renderExperimentResults() {
+  const L = t();
   const data = await api.get(`/api/experiments/${currentExperiment}/metrics`);
-  const rows = Object.entries(data.arms).map(([label, m]) => {
-    const speech = (m.injection.speech || {}).hijack_rate;
-    const tool = (m.injection.tool_return || {}).hijack_rate;
-    const latent = (m.injection.speech || {}).latent_rate;
-    return `<tr>
+  const rows = Object.entries(data.arms).map(([label, m]) => `<tr>
       <td class="mono">${esc(label)}</td>
-      <td class="num">${pct(speech)}</td>
-      <td class="num">${pct(tool)}</td>
-      <td class="num">${pct(latent)}</td>
+      <td class="num">${pct((m.injection.speech || {}).hijack_rate)}</td>
+      <td class="num">${pct((m.injection.tool_return || {}).hijack_rate)}</td>
+      <td class="num">${pct((m.injection.speech || {}).latent_rate)}</td>
       <td class="num">${pct(m.overdefense.false_block_rate)}</td>
       <td class="num">${pct(m.village_win_rate)}</td>
       <td class="num">${m.mean_tokens_per_game ?? "-"}</td>
       <td class="num">${m.crashed}</td>
-    </tr>`;
-  }).join("");
+    </tr>`).join("");
   el("exp-results").innerHTML =
-    "<tr><th>guard</th><th class='num'>hijack (speech)</th><th class='num'>hijack (tool)</th>" +
-    "<th class='num'>latent</th><th class='num'>false block</th><th class='num'>village win</th>" +
-    "<th class='num'>tokens/game</th><th class='num'>crashed</th></tr>" + rows;
+    `<tr><th>${L.colGuard}</th><th class="num">${L.colHijackSpeech}</th>` +
+    `<th class="num">${L.colHijackTool}</th><th class="num">${L.colLatent}</th>` +
+    `<th class="num">${L.colFalseBlock}</th><th class="num">${L.colVillageWin}</th>` +
+    `<th class="num">${L.colTokens}</th><th class="num">${L.colCrashed}</th></tr>` + rows;
 }
 
 const pct = (v) => (v === null || v === undefined ? "-" : (100 * v).toFixed(1) + "%");
 
+applyStaticStrings();
 loadGames();

@@ -254,7 +254,10 @@ class AgentLoop:
                 )
                 if blocked is not None:
                     step.guard_blocked = True
-                    step.block_reason = blocked["reason"]
+                    # The check's name, not its sentence: the sentence is written
+                    # for the model (it gets fed back into the next prompt) and
+                    # stays in the observation. A UI needs a label.
+                    step.block_reason = blocked.get("check") or "guard"
                     step.observation = f"[guard] {blocked['reason']}"
                     result.guard_blocks.append(blocked | {"step": step_no})
                     result.react_trace.append(step.to_dict())
