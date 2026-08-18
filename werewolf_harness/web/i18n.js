@@ -33,6 +33,18 @@ const I18N = {
     seatId: (p) => `${p} 号`, human: "（真人）",
     sumDeaths: "夜间死亡", sumTally: "票型", sumExiled: "出局",
     hNight: "夜间", nightTurn: "夜间回合", modelLabel: "模型",
+    hPhases: "本轮时序",
+    phaseNight: "夜", phaseSpeech: "昼 · 发言", phaseVote: "昼 · 投票",
+    dawn: "天亮", nobodyDied: "无人死亡", diedTonight: (who) => `${who} 死亡`,
+    nightLine: (seat, role, act, target, outcome) =>
+      `${seat} 号 ${role}　${act}${target ? ` → ${target} 号` : ""}　${outcome}`,
+    speechLine: (order, seat, target) =>
+      `#${order} ${seat} 号${target ? ` → 表态投 ${target} 号` : ""}`,
+    carriedPayload: "夹带注入",
+    voteLine: (seat, target) => `${seat} 号 → ${target === null ? "弃票" : target + " 号"}`,
+    exiledLine: (who) => (who ? `出局 ${who} 号` : "平票，无人出局"),
+    blockedTimes: (n) => `被拦 ${n} 次`,
+    gameEndsHere: "游戏在此结束",
     nightAction: {
       night_check: "验人", night_kill: "刀人", night_save: "用解药",
       night_poison: "用毒药", night_skip: "空过",
@@ -123,6 +135,18 @@ const I18N = {
     seatId: (p) => `p${p}`, human: " (human)",
     sumDeaths: "night deaths", sumTally: "tally", sumExiled: "exiled",
     hNight: "night", nightTurn: "night turn", modelLabel: "model",
+    hPhases: "how this round played out",
+    phaseNight: "night", phaseSpeech: "day · speeches", phaseVote: "day · vote",
+    dawn: "dawn", nobodyDied: "nobody died", diedTonight: (who) => `${who} died`,
+    nightLine: (seat, role, act, target, outcome) =>
+      `p${seat} ${role}　${act}${target ? ` → p${target}` : ""}　${outcome}`,
+    speechLine: (order, seat, target) =>
+      `#${order} p${seat}${target ? ` → says vote p${target}` : ""}`,
+    carriedPayload: "carried a payload",
+    voteLine: (seat, target) => `p${seat} → ${target === null ? "abstained" : "p" + target}`,
+    exiledLine: (who) => (who ? `p${who} exiled` : "tie, nobody out"),
+    blockedTimes: (n) => `blocked ${n}x`,
+    gameEndsHere: "the game ends here",
     nightAction: {
       night_check: "check", night_kill: "kill", night_save: "antidote",
       night_poison: "poison", night_skip: "pass",

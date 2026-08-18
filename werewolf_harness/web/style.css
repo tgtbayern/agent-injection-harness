@@ -223,3 +223,45 @@ body[data-lang="zh"] { line-height: 1.7; }
 /* Uppercasing is a Latin-only device: applied to a mixed line it turns
    "react 轨迹" into "REACT 轨迹", which reads as a shout rather than a label. */
 body[data-lang="zh"] h2 { text-transform: none; letter-spacing: 0.04em; }
+
+
+/* ---- the round, in the order it happened ---- */
+
+.phases { padding-bottom: 10px; }
+.phase { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; }
+.phase + .phase { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+.phase-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding-top: 3px;
+}
+.phase-body { min-width: 0; }
+.pline {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 3px 6px;
+  border-radius: 2px;
+  white-space: pre-wrap;
+  list-style: none;
+}
+.pline::-webkit-details-marker { display: none; }
+.record > summary { cursor: pointer; position: relative; padding-left: 16px; }
+.record > summary::before {
+  content: "▸";
+  position: absolute;
+  left: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.record[open] > summary::before { content: "▾"; }
+.record > summary:hover { background: var(--surface-2); }
+.record-body {
+  margin: 4px 0 10px 16px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+.said { margin-top: 2px; color: var(--text); font-family: var(--sans); font-size: 13px; }
+.pline.muted, .pline.dawn { padding-left: 6px; }
+.pline.dawn { color: var(--muted); border-top: 1px dotted var(--line); margin-top: 4px; padding-top: 5px; }

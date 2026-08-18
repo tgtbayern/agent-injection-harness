@@ -54,7 +54,10 @@ document.querySelectorAll(".lang button").forEach((b) => {
     storeLang(LANG.current);
     applyStaticStrings();
     /* Re-render whatever is on screen, keeping the selected game and seat. */
-    if (state.log) { renderMeta(); renderTimeline(); renderRounds(); renderPlayers(); renderTrace(); }
+    if (state.log) {
+      renderMeta(); renderTimeline(); renderRounds(); renderPhases();
+      renderPlayers(); renderTrace();
+    }
     if (el("config").classList.contains("active")) loadConfig();
     if (el("experiments").classList.contains("active")) pollExperiment();
   };
@@ -93,7 +96,7 @@ async function loadGame(id) {
   state.log = await api.get(`/api/games/${id}`);
   state.round = state.log.rounds.length ? state.log.rounds[0].round : 1;
   state.player = null;
-  renderMeta(); renderTimeline(); renderRounds(); renderPlayers(); renderTrace();
+  renderMeta(); renderTimeline(); renderRounds(); renderPhases(); renderPlayers(); renderTrace();
 }
 
 function renderMeta() {
@@ -134,9 +137,108 @@ function renderRounds() {
   el("rounds").querySelectorAll("button").forEach((b) => {
     b.onclick = () => {
       state.round = Number(b.dataset.round);
-      renderRounds(); renderPlayers(); renderTrace();
+      renderRounds(); renderPhases(); renderPlayers(); renderTrace();
     };
   });
+}
+
+/* The round as a game record: everything that happened, in the order it
+ * happened, with nobody's turn hidden behind a click on their seat.
+ *
+ * Night first -- each wolf's pick and what the pack settled on, then the seer,
+ * then the witch -- then dawn, then speeches in seat order, then the ballot.
+ * Each line opens into that turn's reasoning, so the record reads end to end at
+ * a glance and still goes as deep as the trace does. */
+function renderPhases() {
+  const L = t(), rnd = currentRound();
+  const injected = new Set((rnd.injected_payloads || []).map((x) => x.attacker));
+
+  const nightRows = (rnd.night_turns || []).map((turn) => {
+    const na = turn.night_action || {};
+    const act = esc(L.nightAction[na.action] || na.action || "-");
+    return turnRecord(turn, esc(L.nightLine(
+      turn.player_id, seatRole(turn.player_id), act, na.target || 0, na.outcome || "")));
+  }).join("") || `<div class="pline muted">-</div>`;
+
+  const deaths = (rnd.night_deaths || []).length
+    ? L.diedTonight(rnd.night_deaths.map((p) => esc(L.seatId(p))).join(", "))
+    : L.nobodyDied;
+
+  const speechRows = rnd.agents
+    .filter((a) => a.task === "speak")
+    .sort((a, b) => a.speech_order - b.speech_order)
+    .map((a) => {
+      const flag = injected.has(a.player_id)
+        ? `<span class="attack"> · ${esc(L.carriedPayload)}</span>` : "";
+      const head = `<b>#${a.speech_order + 1} ${esc(L.seatId(a.player_id))}</b> ` +
+                   `<span class="muted">${seatRole(a.player_id)}</span>${flag}`;
+      return turnRecord(a, `${head}<div class="said">${highlightPayloads(a.speech || "")}</div>`);
+    }).join("") || `<div class="pline muted">-</div>`;
+
+  const voteRows = rnd.agents.filter((a) => a.task === "vote").map((a) => {
+    const blocked = (a.guard_blocks || []).length
+      ? ` <span class="guard">${esc(L.blockedTimes(a.guard_blocks.length))}</span>` : "";
+    return turnRecord(a, esc(L.voteLine(a.player_id, a.vote ?? null)) + blocked);
+  }).join("");
+
+  el("phases").innerHTML = `
+    <div class="phase">
+      <div class="phase-label">${esc(L.phaseNight)}</div>
+      <div class="phase-body">${nightRows}
+        <div class="pline dawn">${esc(L.dawn)}: ${esc(deaths)}</div></div>
+    </div>
+    ${rnd.agents.length ? `
+    <div class="phase">
+      <div class="phase-label">${esc(L.phaseSpeech)}</div>
+      <div class="phase-body">${speechRows}</div>
+    </div>
+    <div class="phase">
+      <div class="phase-label">${esc(L.phaseVote)}</div>
+      <div class="phase-body">${voteRows}
+        <div class="pline dawn">${esc(L.exiledLine(rnd.exiled))}</div></div>
+    </div>` : `<div class="phase"><div class="phase-label"></div>
+      <div class="phase-body"><div class="pline dawn">${esc(L.gameEndsHere)}</div></div></div>`}`;
+}
+
+function seatRole(pid) {
+  const L = t(), roles = state.log.ground_truth.roles || {};
+  return esc(L.role[roles[pid]] || roles[pid] || "?");
+}
+
+/* One line of the record, opening into that turn's reasoning. */
+function turnRecord(turn, summary) {
+  const L = t();
+  const steps = (turn.react_trace || []).map((s) => {
+    const cls = s.injected ? "injected" : s.guard_blocked ? "blocked" : "";
+    const flag = s.injected
+      ? `<span class="pill attack">${esc(L.injectedPill)}</span>`
+      : s.guard_blocked
+      ? `<span class="pill guard">${esc(L.blockPill(L.block[s.block_reason] || s.block_reason))}</span>`
+      : "";
+    return `<div class="step ${cls}">
+      <div class="head">${s.step} &rarr; <b>${esc(s.action)}</b>
+        <span class="muted">${esc(JSON.stringify(s.args || {}))}</span> ${flag}</div>
+      ${s.thought ? `<div class="obs">${esc(L.thought)}: ${esc(s.thought)}</div>` : ""}
+      ${s.observation ? `<div class="obs">${highlightPayloads(s.observation)}</div>` : ""}
+    </div>`;
+  }).join("");
+  const diff = beliefDiff(turn.belief_before, turn.belief_after);
+  const exposure = (turn.read_payloads || []).map((r) =>
+    `<span class="pill ${isBenign(r.payload_id) ? "guard" : "attack"}">${
+      esc(L.exposurePill(r.payload_id, L.channel[r.channel] || r.channel))}</span>`).join(" ");
+
+  return `<details class="record">
+    <summary class="pline">${summary}</summary>
+    <div class="record-body">
+      <div class="muted mono">${esc(L.modelLabel)} ${esc(turn.model || "?")} &nbsp;
+        ${esc(L.steps(turn.steps_used))} &nbsp; ${esc(L.tokens(turn.total_tokens))}
+        ${turn.retries ? `&nbsp; ${esc(L.retries(turn.retries))}` : ""}
+        ${turn.forced_terminal ? `&nbsp; <span class="guard">${esc(L.forced)}</span>` : ""}</div>
+      ${exposure ? `<div style="margin:6px 0">${esc(L.exposedTo)}${exposure}</div>` : ""}
+      ${steps}
+      ${diff ? `<div class="beliefdiff" style="margin-top:6px">${esc(L.deltaLead)}: ${diff}</div>` : ""}
+    </div>
+  </details>`;
 }
 
 function currentRound() {
