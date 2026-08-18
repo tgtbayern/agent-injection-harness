@@ -25,6 +25,33 @@ from dataclasses import asdict, dataclass, field
 from .base import ProviderError
 from .openai_compat import OpenAICompatClient
 
+# A relay hiccup must not be reported as "this model does not work". Retries
+# live in the ReAct loop's recovery path, which the probe does not go through,
+# so it needs its own -- a single transient 503 during phase 0 would otherwise
+# demote a perfectly good model and quietly change which models enter the
+# experiment.
+RETRYABLE = {408, 409, 429, 500, 502, 503, 504}
+ATTEMPTS = 3
+BACKOFF_S = 1.5
+
+
+def _with_retry(call, notes: list[str]):
+    """Run a probe request, retrying only what is worth retrying."""
+    delay = BACKOFF_S
+    for attempt in range(ATTEMPTS):
+        try:
+            return call()
+        except ProviderError as exc:
+            transient = exc.status in RETRYABLE or "timed out" in str(exc).lower()
+            if not transient or attempt == ATTEMPTS - 1:
+                raise
+            notes.append(f"transient {exc.status or 'timeout'} on attempt "
+                         f"{attempt + 1}, retrying")
+            time.sleep(delay)
+            delay *= 2
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 PROBE_TOOL = [
     {
         "type": "function",
@@ -73,12 +100,12 @@ def probe_model(
     # 1. reachability + usage accounting
     started = time.time()
     try:
-        basic = client.chat(
+        basic = _with_retry(lambda: client.chat(
             [{"role": "user", "content": "Reply with the single word: ready"}],
             temperature=0.0,
             max_tokens=16,
             timeout=timeout,
-        )
+        ), result.notes)
     except ProviderError as exc:
         result.error = str(exc)[:400]
         result.hint = exc.hint
@@ -100,13 +127,13 @@ def probe_model(
         group=client.group,
     )
     try:
-        tooled = native_client.chat(
+        tooled = _with_retry(lambda: native_client.chat(
             [{"role": "user", "content": "Call report_number with value 7."}],
             tools=PROBE_TOOL,
             temperature=0.0,
             max_tokens=64,
             timeout=timeout,
-        )
+        ), result.notes)
         calls = [c for c in tooled.tool_calls if c.name == "report_number"]
         result.native_tools = bool(calls)
         result.args_parse = bool(calls) and not calls[0].malformed
