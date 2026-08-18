@@ -32,7 +32,7 @@ evalkit/    runner, six metric axes, judges, statistics
 human/      a human seat, for the baseline that makes the numbers readable
 server/     FastAPI + SQLite: holds the API key, runs batches, serves logs
 web/        three pages; the replay view is the one that matters
-tests/      262 tests, including mandatory coverage of view isolation
+tests/      321 tests, including mandatory coverage of view isolation
 ```
 
 Rules are **not** hand-written. Roles, night-action priority, save/poison
@@ -70,6 +70,55 @@ python -m werewolf_harness.cli play --seat 3
 
 pytest werewolf_harness/tests -q
 ```
+
+---
+
+## Pointing it at a real gateway
+
+The key never touches the front end and never touches a command line. It lives
+in a git-ignored `.env` (or is typed once into the config page, which stores it
+server-side and returns only a mask).
+
+```bash
+cp werewolf_harness/.env.example .env    # fill in base_url and token(s)
+set -a && . ./.env && set +a             # bash/zsh; fish: `export (cat .env | ...)`
+python -m werewolf_harness.cli setup-gateway
+```
+
+Then add a model with its name **copied from the gateway's model list, never
+typed** — relay names drift from vendor names (`claude-sonnet-4-5-20250929` vs
+`claude-sonnet-4.5`), and a typo comes back as `400 no available channel`,
+which reads like a broken key and is not one. Add it on the config page, or:
+
+```bash
+python -m werewolf_harness.cli probe --model <copied-name> --group <group>
+```
+
+`probe` is the phase-0 checklist, and it is not optional. It answers eight
+questions that each cost a whole batch to discover halfway through: is the
+model reachable, does a `tools` request come back with a real `tool_calls`
+structure, do the arguments parse, can a tool result be fed back, **is
+`temperature=0` actually honoured**, is usage reported at all, and how slow is
+a round trip. A model that fails the tool-calling items is not rejected — it is
+demoted to `tool_mode="json_prompt"` and the game log records which mode it
+ran in.
+
+The temperature item is the one to read carefully. Relays often drop the
+parameter on the way upstream; if three identical requests give three different
+answers, part of the variance in that arm belongs to the gateway, not the
+model, and it has to be reported as a limitation rather than averaged away.
+
+To exercise the whole HTTP path — both tool modes, message pairing, retries,
+error mapping — without a network or a key:
+
+```bash
+python -m werewolf_harness.tests.fake_gateway --check
+```
+
+That is a mock of the *wire*, not of the model: a local server speaking
+chat-completions, so the real client plays real games over real HTTP. It is
+what to run before the first paid batch, and it is how the missing retry in the
+probe was found.
 
 ---
 
