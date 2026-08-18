@@ -12,8 +12,12 @@
   --attack: #e0533d;
   --guard: #3d9970;
   --belief: #c9a227;
-  --mono: "JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Latin and digits get the mono face; CJK falls through to the system
+     faces, whose x-height sits close enough that mixed lines stay even. */
+  --mono: "JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace,
+          "PingFang SC", "Microsoft YaHei", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -136,6 +140,8 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
 .timeline { display: flex; align-items: center; gap: 3px; margin: 10px 0 4px; flex-wrap: wrap; }
 .tick { width: 9px; height: 9px; border: 1px solid var(--attack); border-radius: 1px; }
 .tick.hit { background: var(--attack); }
+.tick.benign { border-color: var(--guard); }
+.tick.benign.hit { background: var(--guard); }
 .tick.round-sep { width: 1px; height: 12px; background: var(--line); border: 0; margin: 0 5px; }
 
 .players { list-style: none; margin: 0; padding: 0; }
@@ -186,3 +192,33 @@ mark { background: rgba(224, 83, 61, 0.22); color: var(--attack); padding: 0 2px
 .hint { color: var(--belief); font-size: 12.5px; }
 .empty { color: var(--muted); padding: 20px 0; }
 progress { width: 100%; height: 6px; }
+
+/* ---- language switch ---- */
+
+.lang {
+  margin-left: 12px;
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.lang button {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  padding: 4px 11px;
+}
+.lang button + button { border-left: 1px solid var(--line); }
+.lang button:hover { color: var(--text); }
+.lang button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+
+.note { margin-top: 0; font-size: 12.5px; }
+body[data-lang="zh"] { line-height: 1.7; }
+
+/* Uppercasing is a Latin-only device: applied to a mixed line it turns
+   "react 轨迹" into "REACT 轨迹", which reads as a shout rather than a label. */
+body[data-lang="zh"] h2 { text-transform: none; letter-spacing: 0.04em; }
