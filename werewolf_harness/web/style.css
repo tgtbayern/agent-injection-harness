@@ -160,6 +160,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
 .players li.selected { border-color: var(--muted); background: var(--surface-2); }
 .players li.dead { color: var(--muted); text-decoration: line-through; }
 .players .flag { width: 12px; display: inline-block; text-align: center; }
+.players .seat-model { font-size: 11px; opacity: 0.75; }
 
 .step { border-left: 2px solid var(--line); padding: 6px 0 6px 12px; margin-bottom: 4px; }
 .step.injected { border-left-color: var(--attack); }

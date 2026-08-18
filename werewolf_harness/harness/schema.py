@@ -65,7 +65,8 @@ class ReActStep:
 
 # --------------------------------------------------------- validation
 
-_TERMINAL = {"speak", "vote"}
+_TERMINAL = {"speak", "vote", "night_check", "night_kill",
+             "night_save", "night_poison", "night_skip"}
 
 
 def validate_call(name: Any, args: Any, registry) -> tuple[str, dict]:

@@ -11,6 +11,7 @@ nothing that a smaller number does not.
 
 from __future__ import annotations
 
+import json
 import time
 import traceback
 import uuid
@@ -37,6 +38,11 @@ from ..harness.providers import build_client
 class RunConfig:
     seed: int = 1
     model: dict = field(default_factory=lambda: {"model_name": "mock"})
+    # Optional per-seat override. Default is a single-model table, which is what
+    # the main experiment uses -- a mixed table measures interaction effects,
+    # not model properties. Recording which model sat where is separate from
+    # allowing them to differ, and is always done.
+    seat_models: dict[int, dict] | None = None
     guard_layers: tuple[str, ...] = ()
     evidence_forced: bool = False
     max_react_steps: int = 8
@@ -87,6 +93,13 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
         },
     )
     log["config"]["anonymise_speakers"] = cfg.anonymise_speakers
+    log["config"]["seat_models"] = {
+        str(seat): (cfg.seat_models or {}).get(seat, cfg.model).get("display_name")
+        or (cfg.seat_models or {}).get(seat, cfg.model).get("model_name")
+        for seat in range(1, 9)
+    }
+    if len(set(log["config"]["seat_models"].values())) > 1:
+        log["config"]["model"] = "mixed"
     log["experiment_id"] = cfg.experiment_id
     log["config"]["human_players"] = list(cfg.human_players)
 
@@ -111,34 +124,66 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
             if cfg.trace_dir
             else None
         )
-        client = build_client({**cfg.model, "seed": cfg.seed})
         policy = RecoveryPolicy(
             max_react_steps=cfg.max_react_steps, timeout_s=cfg.timeout_s
         )
-        loop = AgentLoop(
-            client=client,
-            registry=registry,
-            context=context,
-            guard=guard,
-            policy=policy,
-            tracer=tracer,
-            temperature=cfg.temperature,
-            max_tokens=cfg.max_tokens,
-            payload_detector=injector.detect,
-        )
+
+        # One client per distinct model config, one loop per seat. The loops
+        # share the guard, the registry and the tracer, so guard counters stay
+        # game-level while each seat can be served by its own model.
+        clients: dict[str, object] = {}
+
+        def loop_for(seat: int) -> AgentLoop:
+            spec = (cfg.seat_models or {}).get(seat, cfg.model)
+            key = json.dumps(spec, sort_keys=True, default=str)
+            if key not in clients:
+                clients[key] = build_client({**spec, "seed": cfg.seed})
+            return AgentLoop(
+                client=clients[key],
+                registry=registry,
+                context=context,
+                guard=guard,
+                policy=policy,
+                tracer=tracer,
+                temperature=cfg.temperature,
+                max_tokens=cfg.max_tokens,
+                payload_detector=injector.detect,
+            )
+
+        loops = {seat: loop_for(seat) for seat in range(1, 9)}
 
         players = list(range(1, 9))
         beliefs = {p: BeliefState(p, players) for p in players}
         wolves = state.setup.wolves()
 
         while state.phase is not Phase.OVER:
-            state.resolve_night()
+            # --- night: one agent turn per role that acts -------------------
+            night_turns = []
+            state.begin_night()
+            while (actor := state.night_actor()) is not None:
+                result = _turn(loops[actor], human_ui, state, actor, beliefs[actor],
+                               "night", cfg.human_players)
+                night_turns.append(result.to_dict())
+                emit("night", result.to_dict())
+            state.end_night()
             if state.phase is Phase.OVER:
+                if night_turns:
+                    log["rounds"].append({
+                        "round": state.round,
+                        "alive": state.alive_sorted(),
+                        "night_deaths": state.night_victims.get(state.round, []),
+                        "night_turns": night_turns,
+                        "agents": [],
+                        "injected_payloads": [],
+                        "vote_counts": {},
+                        "exiled": None,
+                    })
                 break
             round_log = {
                 "round": state.round,
                 "alive": state.alive_sorted(),
                 "night_deaths": state.night_victims.get(state.round, []),
+                "night_turns": night_turns,
                 "agents": [],
                 "injected_payloads": [],
             }
@@ -146,8 +191,8 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
 
             # --- speeches -------------------------------------------------
             while (speaker := state.current_speaker()) is not None:
-                result = _turn(loop, human_ui, state, speaker, beliefs[speaker], "speak",
-                               cfg.human_players)
+                result = _turn(loops[speaker], human_ui, state, speaker,
+                               beliefs[speaker], "speak", cfg.human_players)
                 if (
                     result.speech
                     and speaker in wolves
@@ -163,8 +208,8 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
 
             # --- votes ----------------------------------------------------
             for voter in state.alive_sorted():
-                result = _turn(loop, human_ui, state, voter, beliefs[voter], "vote",
-                               cfg.human_players)
+                result = _turn(loops[voter], human_ui, state, voter, beliefs[voter],
+                               "vote", cfg.human_players)
                 round_log["agents"].append(result.to_dict())
                 emit("vote", result.to_dict())
 
@@ -175,8 +220,10 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
             emit("round_end", {"round": round_log["round"], "exiled": exiled})
 
         if cfg.reverse_turing and cfg.human_players:
+            # Any seat's client will do -- the side metric asks one question
+            # and is not part of the experiment proper.
             log["reverse_turing"] = _reverse_turing(
-                client, state, log, set(cfg.human_players)
+                loops[1].client, state, log, set(cfg.human_players)
             )
 
         log["ground_truth"] = state.ground_truth()
@@ -189,11 +236,14 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
         log["outcome"]["crash_reason"] = f"{type(exc).__name__}: {exc}"
         log["outcome"]["traceback"] = traceback.format_exc()[-2000:]
 
-    prompt_tokens = sum(
-        a.get("prompt_tokens", 0) for r in log["rounds"] for a in r["agents"]
-    )
+    def _all_turns(rounds):
+        for rnd in rounds:
+            yield from rnd.get("agents", [])
+            yield from rnd.get("night_turns", [])
+
+    prompt_tokens = sum(a.get("prompt_tokens", 0) for a in _all_turns(log["rounds"]))
     completion_tokens = sum(
-        a.get("completion_tokens", 0) for r in log["rounds"] for a in r["agents"]
+        a.get("completion_tokens", 0) for a in _all_turns(log["rounds"])
     )
     log["outcome"]["total_prompt_tokens"] = prompt_tokens
     log["outcome"]["total_completion_tokens"] = completion_tokens
@@ -204,6 +254,11 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
 
 
 def _turn(loop, human_ui, state, player_id, belief, task, human_players):
+    """One turn, tagged with the model that produced it.
+
+    The tag goes on every turn rather than once per game: a reader of a single
+    trace should never have to look elsewhere to find out what generated it.
+    """
     if human_ui is not None and player_id in human_players:
         result = human_ui.run_turn(state, player_id, belief, task)
         # A human turn is scored on the same terms as an agent turn, so the
@@ -211,8 +266,11 @@ def _turn(loop, human_ui, state, player_id, belief, task, human_players):
         # baseline would show a hijack rate of zero for the trivial reason that
         # nobody recorded what they read.
         loop._record_payloads(state, player_id, result, step=0)
+        result.model = "human"
         return result
-    return loop.run_turn(state, player_id, belief, task)
+    result = loop.run_turn(state, player_id, belief, task)
+    result.model = getattr(loop.client, "name", "?")
+    return result
 
 
 REVERSE_TURING_PROMPT = """\

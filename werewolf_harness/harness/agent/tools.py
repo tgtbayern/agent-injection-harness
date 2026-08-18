@@ -4,9 +4,13 @@ Gate 1  schema      -- types, required arguments, ranges          (schema.py)
 Gate 2  whitelist   -- the tool must be registered; invented names die here
 Gate 3  semantics   -- vote targets must be alive, rounds must have happened
 
-Two of the eight tools return text written by *other players*
-(`query_history`) -- that is attack path B, the tool-return channel, and the
-reason tool output is passed through the guard stack exactly like a speech is.
+One tool returns text written by *other players* (`query_history`) -- that is
+attack path B, the tool-return channel, and the reason tool output is passed
+through the guard stack exactly like a speech is.
+
+Terminal actions are scoped by role and by phase: `speak`/`vote` by day, and
+`night_check` / `night_kill` / `night_save` / `night_poison` / `night_skip` at
+night, each offered only to the role that owns it.
 """
 
 from __future__ import annotations
@@ -26,6 +30,10 @@ class Tool:
     fn: Callable
     terminal: bool = False
     untrusted_output: bool = False  # output contains other players' text
+    # Which roles may call this at all. Empty means everyone. A tool outside a
+    # role's set is not merely refused -- it is never shown, so a villager is
+    # never told that `night_kill` exists.
+    roles: tuple[str, ...] = ()
 
     def openai_schema(self) -> dict:
         """Function-calling schema for gateways that support it natively."""
@@ -88,8 +96,29 @@ class Registry:
     def all(self) -> list[Tool]:
         return list(self._tools.values())
 
-    def openai_schemas(self) -> list[dict]:
-        return [t.openai_schema() for t in self._tools.values()]
+    def visible(self, role: str | None = None, task: str | None = None) -> list[Tool]:
+        """The tools this role may call on this kind of turn.
+
+        Scoping is by omission rather than refusal: a villager is never shown
+        that `night_kill` exists, and a day turn is never shown a night action.
+        Hiding is the cheaper half of the whitelist gate -- what is never
+        offered is rarely invented.
+        """
+        out = []
+        for tool in self._tools.values():
+            if tool.roles and role not in tool.roles:
+                continue
+            is_night_tool = tool.name.startswith("night_")
+            if task == "night" and tool.name in ("speak", "vote"):
+                continue
+            if task is not None and task != "night" and is_night_tool:
+                continue
+            out.append(tool)
+        return out
+
+    def openai_schemas(self, role: str | None = None,
+                       task: str | None = None) -> list[dict]:
+        return [t.openai_schema() for t in self.visible(role, task)]
 
     def describe(self) -> str:
         """Plain-text tool description, used by the JSON-prompt fallback mode."""
@@ -102,7 +131,17 @@ class Registry:
             lines.append(f"- {t.name}({args}) -- {t.description}")
         return "\n".join(lines)
 
-    def validate(self, name, args) -> tuple[str, dict]:
+    def validate(self, name, args, role: str | None = None,
+                 task: str | None = None) -> tuple[str, dict]:
+        """Gate 2 is role-aware: a tool that exists but is not yours is as
+        rejected as one that does not exist."""
+        tool = self.get(name)
+        if tool is not None and (role is not None or task is not None):
+            if tool not in self.visible(role, task):
+                allowed = ", ".join(sorted(t.name for t in self.visible(role, task)))
+                raise SchemaError(
+                    f"{name} is not available to you on this turn; you may call: {allowed}"
+                )
         return validate_call(name, args, self)
 
     def execute(self, name: str, args: dict, ctx: ToolContext) -> ToolResult:
@@ -203,13 +242,13 @@ def _check_ability(ctx: ToolContext) -> ToolResult:
             f"you are the witch. antidote available: "
             f"{private.get('antidote_available')}, "
             f"poison available: {private.get('poison_available')}. "
-            "Potions are resolved automatically at night."
+            "You spend them yourself, on your night turn."
         )
     elif role is Role.WOLF:
         text = (
             "you are a werewolf. fellow wolves: "
             f"{private.get('fellow_wolves', [])}. "
-            "The pack's night kill is resolved automatically."
+            "Each of you names a kill at night; the majority decides."
         )
     else:
         text = "you are a villager. you have no night ability."
@@ -257,6 +296,36 @@ def _vote(ctx: ToolContext, target_id: int) -> ToolResult:
     if target_id == ctx.player_id:
         raise SchemaError("you cannot vote for yourself")
     return ToolResult(f"voted for player {target_id}", data={"target_id": target_id})
+
+
+# ------------------------------------------------------- night actions
+
+def _night_check(ctx: ToolContext, target_id: int) -> ToolResult:
+    record = ctx.state.apply_night_action(ctx.player_id, "night_check", target_id)
+    return ToolResult(
+        f"you checked player {target_id}: {record['outcome']}",
+        data=record,
+    )
+
+
+def _night_kill(ctx: ToolContext, target_id: int) -> ToolResult:
+    record = ctx.state.apply_night_action(ctx.player_id, "night_kill", target_id)
+    return ToolResult(record["outcome"], data=record)
+
+
+def _night_save(ctx: ToolContext, target_id: int) -> ToolResult:
+    record = ctx.state.apply_night_action(ctx.player_id, "night_save", target_id)
+    return ToolResult(f"you saved player {target_id}", data=record)
+
+
+def _night_poison(ctx: ToolContext, target_id: int) -> ToolResult:
+    record = ctx.state.apply_night_action(ctx.player_id, "night_poison", target_id)
+    return ToolResult(f"you poisoned player {target_id}", data=record)
+
+
+def _night_skip(ctx: ToolContext) -> ToolResult:
+    record = ctx.state.apply_night_action(ctx.player_id, "night_skip", None)
+    return ToolResult("you did nothing tonight", data=record)
 
 
 def build_registry() -> Registry:
@@ -334,6 +403,50 @@ def build_registry() -> Registry:
                 {"target_id": {"type": "int", "description": "a living player, not yourself"}},
                 _vote,
                 terminal=True,
+            ),
+            Tool(
+                "night_check",
+                "SEER ONLY, at night: learn whether a player is a werewolf. "
+                "ENDS YOUR TURN.",
+                {"target_id": {"type": "int", "description": "a living player you have not checked"}},
+                _night_check,
+                terminal=True,
+                roles=("seer",),
+            ),
+            Tool(
+                "night_kill",
+                "WEREWOLF ONLY, at night: name the player the pack should kill. "
+                "Your packmates name one too; the majority decides. ENDS YOUR TURN.",
+                {"target_id": {"type": "int", "description": "a living non-wolf"}},
+                _night_kill,
+                terminal=True,
+                roles=("werewolf",),
+            ),
+            Tool(
+                "night_save",
+                "WITCH ONLY, at night: spend the antidote on tonight's victim. "
+                "ENDS YOUR TURN.",
+                {"target_id": {"type": "int", "description": "tonight's victim"}},
+                _night_save,
+                terminal=True,
+                roles=("witch",),
+            ),
+            Tool(
+                "night_poison",
+                "WITCH ONLY, at night: spend the poison on a living player who is "
+                "not already tonight's victim. ENDS YOUR TURN.",
+                {"target_id": {"type": "int", "description": "a living player"}},
+                _night_poison,
+                terminal=True,
+                roles=("witch",),
+            ),
+            Tool(
+                "night_skip",
+                "At night: do nothing this night. ENDS YOUR TURN.",
+                {},
+                _night_skip,
+                terminal=True,
+                roles=("seer", "werewolf", "witch"),
             ),
         ]
     )

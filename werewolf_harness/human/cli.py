@@ -51,7 +51,9 @@ class HumanPlayer:
             self._collect_beliefs(view, belief, state)
             self._last_belief_round = state.round
 
-        if task == "speak":
+        if task == "night":
+            self._night_turn(state, player_id, result)
+        elif task == "speak":
             content = self._ask_text("Your speech (one line): ") or "I pass this round."
             applied = state.apply_action(player_id, {"name": "speak", "content": content})
             result.speech = content
@@ -66,13 +68,64 @@ class HumanPlayer:
 
         result.belief_after = belief.snapshot()
         result.react_trace = [
-            {"step": 1, "thought": "(human)", "action": task, "args": {},
+            {"step": 1, "thought": "(human)",
+             "action": (result.night_action or {}).get("action", task), "args": {},
              "observation": "", "tokens": 0, "latency_ms": 0,
              "guard_blocked": False, "block_reason": None, "guard_detections": [],
              "injected": False}
         ]
         result.steps_used = 1
         return result
+
+    def _night_turn(self, state: GameState, player_id: int, result: TurnResult) -> None:
+        """A human's night turn.
+
+        The same choice the agents get, offered the same way: the engine says
+        what is legal, the person picks. A seat that has nothing to do tonight
+        is told so and skipped rather than asked a meaningless question.
+        """
+        options = state.night_options(player_id)
+        actions = [a for a in options["actions"] if a != "night_skip"]
+        targets = options["targets"]
+
+        if options.get("victims_tonight") is not None:
+            self.output(f"  the wolves attacked: {options['victims_tonight'] or 'nobody'}")
+        if options.get("pack_votes_so_far"):
+            self.output(f"  your pack has named so far: {options['pack_votes_so_far']}")
+
+        if not actions:
+            state.apply_action(player_id, {"name": "night_skip", "target_id": None})
+            result.night_action = {"action": "night_skip", "target": None}
+            self.output("  nothing for you to do tonight")
+            return
+
+        chosen = actions[0]
+        if len(actions) > 1:
+            self.output(f"  tonight you may: {', '.join(actions)} (or skip)")
+            for index, action in enumerate(actions, start=1):
+                self.output(f"    {index}. {action}")
+            pick = self._ask_int(
+                f"  choose 1-{len(actions)}, or 0 to skip: ",
+                allowed=set(range(0, len(actions) + 1)),
+            )
+            if pick == 0:
+                state.apply_action(player_id, {"name": "night_skip", "target_id": None})
+                result.night_action = {"action": "night_skip", "target": None}
+                return
+            chosen = actions[pick - 1]
+
+        target = self._ask_int(
+            f"  {chosen} on which player {targets}, or 0 to skip: ",
+            allowed=set(targets) | {0},
+        )
+        if target == 0:
+            state.apply_action(player_id, {"name": "night_skip", "target_id": None})
+            result.night_action = {"action": "night_skip", "target": None}
+            return
+        applied = state.apply_action(player_id, {"name": chosen, "target_id": target})
+        result.night_action = {"action": chosen, "target": target,
+                               "outcome": applied.get("outcome")}
+        self.output(f"  -> {applied.get('outcome')}")
 
     # ---- presentation ---------------------------------------------------
 

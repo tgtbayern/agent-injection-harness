@@ -38,8 +38,9 @@ tests/      262 tests, including mandatory coverage of view isolation
 Rules are **not** hand-written. Roles, night-action priority, save/poison
 conflict resolution, vote legality and win conditions come from the MIT-licensed
 [`werewolf-engine`](https://pypi.org/project/werewolf-engine/) package;
-`engine/` is a ~300-line adapter that seeds it deterministically and adds the
-three things it has no concept of: a speech phase, abstention, and a round cap.
+`engine/` is an adapter that seeds it deterministically and adds the things it
+has no concept of: a speech phase, abstention, a round cap, and a turn-based
+night in which every action is an agent's own decision rather than a script.
 The game is the environment, not the deliverable — writing a fifth Werewolf
 implementation would have been the wrong use of the time.
 

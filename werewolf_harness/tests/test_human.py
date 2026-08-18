@@ -17,7 +17,13 @@ from werewolf_harness.human.cli import HumanPlayer
 
 
 class Console:
-    """Scripted stdin plus captured stdout."""
+    """Scripted stdin plus captured stdout.
+
+    When a prompt offers a bracketed list of legal choices, the fake human
+    takes the first one. Feeding a fixed number instead would have it rejected
+    on any turn where that number is illegal -- a seer cannot check itself --
+    which reads as a bug in the CLI when it is really a bug in the fixture.
+    """
 
     def __init__(self, answers: list[str]):
         self.answers = list(answers)
@@ -26,6 +32,13 @@ class Console:
 
     def input(self, prompt: str = "") -> str:
         self.prompts.append(prompt)
+        # An empty script means nobody is at the keyboard: answer nothing, so
+        # the "walked away" path stays testable.
+        offered = re.search(r"\[([\d, ]+)\]", prompt or "")
+        if self.answers and offered and "or 0 to" in (prompt or ""):
+            first = offered.group(1).split(",")[0].strip()
+            if first:
+                return first
         return self.answers.pop(0) if self.answers else ""
 
     def output(self, *args) -> None:

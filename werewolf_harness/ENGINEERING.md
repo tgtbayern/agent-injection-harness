@@ -1,17 +1,17 @@
 # Engineering notes
 
 How the harness is built, why it is built that way, and what broke along the
-way. Roughly 7,400 lines of Python plus a no-build frontend:
+way. Roughly 8,500 lines of Python plus a no-build frontend:
 
 | package | lines | role |
 |---|---|---|
-| `engine/` | 683 | deterministic referee (adapter over a rules library) |
-| `harness/` | 3072 | **the contribution**: ReAct loop, tools, memory, guards, providers |
-| `evalkit/` | 1011 | runner, six metric axes, judges, statistics |
-| `attacks/` | 379 | payload + benign corpora, injector, detection |
+| `engine/` | 947 | deterministic referee (adapter over a rules library) |
+| `harness/` | 3349 | **the contribution**: ReAct loop, tools, memory, guards, providers |
+| `evalkit/` | 1068 | runner, six metric axes, judges, statistics |
+| `attacks/` | 232 | payload + benign corpora, injector, detection |
 | `server/` | 681 | FastAPI + SQLite |
-| `web/` | 772 | replay / config / experiments, no build step |
-| `tests/` | 1230 | 262 tests |
+| `web/` | 1022 | replay / config / experiments, bilingual, no build step |
+| `tests/` | 1660 | 312 tests |
 
 ---
 
@@ -51,11 +51,33 @@ adds only what the experiment needs and the library does not have:
 | **round cap** | six rounds, then the wolves win on time. |
 | **determinism** | the library shuffles the *global* RNG. Role assignment is redone with a local `random.Random(seed)` so games are reproducible and safe to run concurrently — while still using the library's role registry and role classes. |
 
-**Night is scripted.** Night actions are chosen by a seeded policy rather than
-by agents. This is a scope decision, not an oversight: the behaviour under study
-is day-phase vote hijacking, so both the model budget and the run-to-run
-variance belong there. It also means two runs with the same seed face the same
-world, which is what makes paired comparison work.
+**The night is played, not scripted.** Every night action is an agent's own
+decision, taken in a real ReAct turn with its own trace: the seer chooses who to
+check, each wolf names a kill, and the witch decides whether to spend a potion.
+An earlier version scripted the night from a seeded policy to save budget; that
+bought about 10% of the call volume and cost the thing the harness is for --
+you could not see the reasoning behind a night action because there was none.
+
+Control comes from every configuration running the identical seed set and the
+identical procedure, not from freezing what the agents do inside it.
+
+Two rules the harness adds, both to remove genuine ambiguity rather than to
+constrain play:
+
+* **The pack decides together.** Each living wolf names a target; the majority
+  stands and a tie goes to whoever named first. Only that one target is
+  submitted to the library, so the second wolf to act cannot silently overwrite
+  the first -- which is what the library's own semantics would do.
+* **Saving and poisoning are separate actions.** The library infers which the
+  witch meant from whether the target is tonight's victim, which makes "poison
+  someone who was already attacked" unrepresentable. The harness names the two
+  actions separately and refuses that case with a reason.
+
+Night actions are scoped by role *and* by state: `night_save` is not offered
+once the antidote is spent, and `night_check` disappears when there is nobody
+left to check. A referee that advertises an illegal move is not merely untidy --
+an agent that takes it up burns its whole turn being refused, which is a bug
+this actually hit before the scoping went in.
 
 ---
 
@@ -89,25 +111,32 @@ the tool-return attack channel.
 
 ### Tools
 
-Eight, frozen before anything else was written:
+Six information tools shared by everyone, plus one terminal action per phase
+and role:
 
 | tool | kind | notes |
 |---|---|---|
 | `query_history(player, round)` | read | **untrusted output** — attack path B |
 | `query_votes(round)` | read | |
-| `query_deaths()` | read | |
+| `query_deaths()` | read | a night death never says *how* |
 | `read_belief(player)` | read | |
 | `check_ability()` | read | role-specific private status |
 | `update_belief(player, suspicion, reason, evidence_refs)` | write-self | |
-| `speak(content)` | terminal | ends the turn |
-| `vote(target_id)` | terminal | ends the turn |
+| `speak(content)` / `vote(target_id)` | terminal, day | |
+| `night_check(target)` | terminal, night | seer only |
+| `night_kill(target)` | terminal, night | wolves only; the majority decides |
+| `night_save(target)` / `night_poison(target)` | terminal, night | witch only |
+| `night_skip()` | terminal, night | any night role |
 
 Three gates, in order:
 
 1. **schema** — types, ranges, required arguments. `"4"` coerces to `4`; `True`
    does not (a bool is not a player id).
-2. **whitelist** — the tool must be registered. This is where hallucinated tools
-   die, and the error hands back the legal list so the retry can succeed.
+2. **whitelist** — the tool must be registered *and* available to this role on
+   this kind of turn. Scoping is by omission first: a villager is never shown
+   that `night_kill` exists, and a day turn is never offered a night action.
+   Hallucinated and out-of-scope calls both die here, and the error hands back
+   the legal list so the retry can succeed.
 3. **semantics** — vote targets must be alive and not yourself; rounds must have
    happened.
 

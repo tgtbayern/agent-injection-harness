@@ -72,12 +72,16 @@ def to_player_id(engine_id: int) -> int:
 
 @dataclass(frozen=True)
 class Setup:
-    """Everything the seed decides, resolved once before the first night."""
+    """Everything the seed decides, resolved once before the first night.
+
+    Note what is *not* here: night targets. Who the seer checks, who the wolves
+    kill and what the witch does with her potions are decisions the agents make
+    in their own turns -- the seed fixes the world, not the play.
+    """
 
     roles: dict[int, Role]
     speech_order: list[int]
-    seer_preference: list[int]
-    wolf_preference: list[int]
+    fallback_order: list[int]
 
     def wolves(self) -> list[int]:
         return sorted(p for p, r in self.roles.items() if r is Role.WOLF)
@@ -105,18 +109,30 @@ def build_game(seed: int) -> tuple[Game, Setup]:
         player.assign_role(get_role_class(role_name)())
 
     ids = [to_player_id(i) for i in range(NUM_PLAYERS)]
+
+    # Speech order is FIXED at 1..8 while roles are randomised, rather than the
+    # other way round. Two reasons, and the second is the important one:
+    #
+    #   * a transcript read back in seat order is legible; a shuffled order
+    #     makes every review of a game an exercise in re-sorting.
+    #   * it decouples the conformity axis. With position fixed and role
+    #     random, "speaking fifth" and "being the seer" vary independently, so
+    #     an order effect cannot be a role effect wearing a disguise.
+    #
+    # Control does not come from freezing the order -- it comes from every
+    # configuration running the identical seed set.
     speech_order = ids[:]
-    rng.shuffle(speech_order)
-    seer_preference = ids[:]
-    rng.shuffle(seer_preference)
-    wolf_preference = ids[:]
-    rng.shuffle(wolf_preference)
+
+    # Used only when an agent's night turn cannot be salvaged (see recovery):
+    # a seeded, reproducible target so a failed call never degenerates into
+    # "the wolves did not kill anyone tonight".
+    fallback_order = ids[:]
+    rng.shuffle(fallback_order)
 
     setup = Setup(
         roles={to_player_id(p.id): Role(p.role.name) for p in game.players},
         speech_order=speech_order,
-        seer_preference=seer_preference,
-        wolf_preference=wolf_preference,
+        fallback_order=fallback_order,
     )
     return game, setup
 
