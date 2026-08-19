@@ -43,10 +43,29 @@ def test_different_seeds_give_different_worlds():
     assert len(worlds) > 5
 
 
+def _counts(state):
+    """Roles actually dealt. Absent roles are absent, not zero-valued."""
+    counts = {}
+    for role in state.roles.values():
+        counts[role] = counts.get(role, 0) + 1
+    return counts
+
+
 def test_role_counts_match_the_standard_setup():
     state = GameState.new(7)
-    counts = {r: sum(1 for x in state.roles.values() if x is r) for r in Role}
-    assert counts == {Role.WOLF: 2, Role.SEER: 1, Role.WITCH: 1, Role.VILLAGER: 4}
+    assert _counts(state) == {
+        Role.WOLF: 2, Role.SEER: 1, Role.WITCH: 1, Role.VILLAGER: 4
+    }
+
+
+def test_twelve_player_setup_deals_four_wolves_and_four_gods():
+    state = GameState.new(7, variant="12p")
+    assert state.num_players == 12
+    assert _counts(state) == {
+        Role.WOLF: 4,
+        Role.SEER: 1, Role.WITCH: 1, Role.HUNTER: 1, Role.GUARD: 1,
+        Role.VILLAGER: 4,
+    }
 
 
 def test_night_is_reproducible():

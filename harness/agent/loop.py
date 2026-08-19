@@ -43,6 +43,10 @@ class TurnResult:
     speech_order: int | None = None
     vote: int | None = None
     night_action: dict | None = None
+    # Election ballots, badge successions and gunshots. Kept out of `vote` on
+    # purpose: axis 1 counts hijacked *exile* ballots, and pooling these into
+    # it would quietly change what the headline number means.
+    office_action: dict | None = None
     is_human: bool = False
     model: str = "?"
     prompt_tokens: int = 0
@@ -396,9 +400,18 @@ class AgentLoop:
             return {"check": verdict.check, "reason": verdict.reason, "action": name}
         return None
 
+    # Tools whose payload is prose, and the pairs where "do nothing" is a
+    # separate tool so the model never has to invent a null argument.
+    _TEXT_ACTIONS = {"speak", "campaign_run", "last_words"}
+    _NULL_ALIASES = {"badge_tear": "badge_transfer", "hunter_hold": "hunter_shoot"}
+
     def _apply_terminal(self, state, player_id, name, args, step) -> dict | None:
-        if name == "speak":
-            action = {"name": "speak", "content": args["content"]}
+        if name in self._TEXT_ACTIONS:
+            action = {"name": name, "content": args["content"]}
+        elif name == "campaign_pass":
+            action = {"name": "campaign_pass"}
+        elif name in self._NULL_ALIASES:
+            action = {"name": self._NULL_ALIASES[name], "target_id": None}
         else:
             action = {"name": name, "target_id": args.get("target_id")}
         try:
@@ -417,19 +430,37 @@ class AgentLoop:
                 "outcome": (applied or {}).get("outcome"),
             }
             return
-        if name == "speak":
+        if name in ("speak", "campaign_run", "last_words"):
             result.speech = args["content"]
-            result.speech_order = applied.get("speech_order")
+            result.speech_order = (applied or {}).get("speech_order")
             result.hallucinated_citations = evidence_mod.unsupported_citations(
                 args["content"], speaker=player_id, lookups=lookups
             )
+        elif name == "campaign_pass":
+            result.speech = None
+        elif name in ("campaign_vote", "badge_transfer", "badge_tear",
+                      "hunter_shoot", "hunter_hold"):
+            # Not a ballot to exile anyone, so it must not land in `result.vote`
+            # -- axis 1 counts hijacked *exile* votes and would otherwise be
+            # counting elections and gunshots alongside them.
+            result.office_action = {
+                "action": name, "target": args.get("target_id")
+            }
         else:
             result.vote = args.get("target_id")
 
     def _force_terminal(self, state, player_id, task, result, stats, messages, lookups):
         """Out of steps, or the loop broke. Ask once, then fall back."""
         stats.forced_terminal = True
-        wanted = {"speak": "speak", "vote": "vote"}.get(task, "night action")
+        wanted = {
+            "speak": "speak",
+            "vote": "vote",
+            "campaign": "campaign_run or campaign_pass",
+            "campaign_vote": "campaign_vote",
+            "last_words": "last_words",
+            "hunter_shoot": "hunter_shoot or hunter_hold",
+            "badge": "badge_transfer or badge_tear",
+        }.get(task, "night action")
         messages.append(
             {
                 "role": "user",

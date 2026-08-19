@@ -253,12 +253,55 @@ class ContextBuilder:
 
     def _task_line(self, task: str, view: dict) -> str:
         you = view["you"]
+        public = view.get("public", {})
         if task == "speak":
             pos = you["speech_position"]
+            badge = public.get("sheriff")
+            office = ""
+            if badge == you["player_id"]:
+                office = (
+                    " You hold the badge: you speak first and your ballot counts "
+                    "1.5. Use it."
+                )
+            elif badge is not None:
+                office = f" Player {badge} is sheriff and casts 1.5 votes."
             return (
                 f"YOUR TASK: it is your turn to speak "
                 f"({pos} of {you['speakers_total']} this round). Investigate if "
-                "you need to, update your beliefs, then call `speak`."
+                "you need to, update your beliefs, then call `speak`." + office
+            )
+        if task == "campaign":
+            return (
+                "YOUR TASK: the sheriff election is open. The sheriff speaks "
+                "first every day and casts 1.5 votes, so the badge decides close "
+                "votes. Standing costs you your vote in this election, and it "
+                "puts a target on you: the wolves know what the badge is worth "
+                "too. Call `campaign_run` with a speech, or `campaign_pass`."
+            )
+        if task == "campaign_vote":
+            cands = public.get("sheriff_candidates", [])
+            return (
+                f"YOUR TASK: elect a sheriff. The candidates are {cands}; their "
+                "campaign speeches are above. Call `campaign_vote`."
+            )
+        if task == "last_words":
+            return (
+                "YOUR TASK: you are dead. This is your last turn and nobody can "
+                "question you about it -- whatever you say stands. Say the one "
+                "thing the living most need to hear, then call `last_words`."
+            )
+        if task == "hunter_shoot":
+            return (
+                "YOUR TASK: you are the hunter and you have died. You may take "
+                "one living player with you. Call `hunter_shoot` with a target, "
+                "or `hunter_hold` to fire at nobody."
+            )
+        if task == "badge":
+            return (
+                "YOUR TASK: you held the badge and you have died. Pass it to a "
+                "living player with `badge_transfer`, or destroy it with "
+                "`badge_tear` so no one inherits it. A badge handed to a wolf is "
+                "worth more to them than your death cost them."
             )
         return (
             "YOUR TASK: the table is voting now. Decide who to exile, then call "

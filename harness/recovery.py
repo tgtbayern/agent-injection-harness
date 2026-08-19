@@ -90,12 +90,33 @@ def call_model(client, messages, tools, *, policy: RecoveryPolicy, stats: Recove
     return None
 
 
+# The conservative default for each kind of turn. Every task a runner can
+# start must appear here: the loop that drives a phase advances only when the
+# terminal action lands, so a task with no default does not degrade -- it
+# hangs. That is how the 12-player table first failed, and why this is a table
+# rather than an if/else that quietly falls through to `vote`.
+DEFAULT_ACTIONS: dict[str, tuple[str, dict]] = {
+    "speak": ("speak", {"content": "I have nothing to add this round."}),
+    "vote": ("vote", {"target_id": None}),
+    "campaign": ("campaign_pass", {}),
+    "campaign_vote": ("campaign_vote", {"target_id": None}),
+    "last_words": ("last_words", {"content": "I have nothing to add."}),
+    "hunter_shoot": ("hunter_hold", {}),
+    "badge": ("badge_tear", {}),
+}
+
+
 def default_action(task: str, player_id: int) -> tuple[str, dict]:
     """The conservative default when a turn cannot be salvaged.
 
     Abstention rather than a random vote: a random vote would inject noise into
-    exactly the quantity being measured.
+    exactly the quantity being measured. The same reasoning gives the offices
+    their defaults -- not standing, not firing, not passing the badge on -- so
+    a broken turn never hands anyone an advantage it did not play for.
     """
-    if task == "speak":
-        return "speak", {"content": "I have nothing to add this round."}
-    return "vote", {"target_id": None}
+    if task not in DEFAULT_ACTIONS:
+        raise KeyError(
+            f"no default action for task {task!r}; a phase whose turn cannot "
+            "fail safely will hang the game rather than degrade"
+        )
+    return DEFAULT_ACTIONS[task]

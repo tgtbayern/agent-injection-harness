@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .rules import NUM_PLAYERS, Phase, Role, to_engine_id, to_player_id
+from .rules import Phase, Role, to_engine_id, to_player_id
 
 if TYPE_CHECKING:  # pragma: no cover
     from .state import GameState
@@ -25,7 +25,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 def get_visible_state(state: "GameState", player_id: int) -> dict:
     """Everything player `player_id` is allowed to know, as a plain dict."""
-    if player_id not in range(1, NUM_PLAYERS + 1):
+    if player_id not in range(1, state.num_players + 1):
         raise ValueError(f"no such player: {player_id}")
 
     return {
@@ -61,7 +61,7 @@ def _public_view(state: "GameState") -> dict:
             {
                 "player_id": d.player_id,
                 "round": d.round,
-                "cause": "exiled" if d.cause == "vote" else "night",
+                "cause": _public_cause(d.cause),
             }
             for d in state.deaths
         ],
@@ -76,7 +76,36 @@ def _public_view(state: "GameState") -> dict:
             for rnd, counts in state.vote_counts.items()
         },
         "exiles": {str(rnd): who for rnd, who in state.exiles.items()},
+        # The badge is public by construction -- an office nobody can see is
+        # not an office. Who holds it, who ran for it, and where it went when
+        # its holder died are all things the whole table watched happen.
+        "sheriff": state.sheriff,
+        "sheriff_candidates": list(state.sheriff_candidates),
+        "badge_transfers": list(state.badge_transfers),
+        # A shot is the loudest event in the game and cannot be concealed. Note
+        # what this says and what it does not: "player 7 shot player 3", never
+        # "player 7 is the hunter". The referee reports the event; the table
+        # draws the inference, exactly as it does from a public seer claim.
+        "shots": [
+            {"round": s["round"], "by": s["hunter"], "target": s["target"]}
+            for s in state.hunter_shots
+        ],
     }
+
+
+def _public_cause(cause: str) -> str:
+    """Death causes the whole table can see.
+
+    "werewolf" and "witch" both collapse to "night": which of the two took
+    someone is the single most valuable thing the village has to infer, and
+    handing it over would void the experiment. A daylight shot does not
+    collapse -- everybody watched it happen.
+    """
+    if cause == "vote":
+        return "exiled"
+    if cause == "hunter":
+        return "shot"
+    return "night"
 
 
 def _private_view(state: "GameState", player_id: int) -> dict:
@@ -110,7 +139,7 @@ def assert_no_leak(view: dict, state: "GameState", player_id: int) -> None:
     """
     others = {
         p: state.role_of(p).value
-        for p in range(1, NUM_PLAYERS + 1)
+        for p in range(1, state.num_players + 1)
         if p != player_id
     }
     private = view.get("private", {})

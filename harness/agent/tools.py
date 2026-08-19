@@ -22,6 +22,21 @@ from ...engine import GameState, Role
 from ..schema import SchemaError, validate_call
 
 
+# Which terminal actions belong to which kind of turn. A turn offers exactly
+# one of these sets; everything else terminal is not shown at all.
+TASK_TERMINALS: dict[str, set[str]] = {
+    "night": {"night_check", "night_kill", "night_save", "night_poison",
+              "night_protect", "night_skip"},
+    "speak": {"speak"},
+    "vote": {"vote"},
+    "campaign": {"campaign_run", "campaign_pass"},
+    "campaign_vote": {"campaign_vote"},
+    "last_words": {"last_words"},
+    "hunter_shoot": {"hunter_shoot", "hunter_hold"},
+    "badge": {"badge_transfer", "badge_tear"},
+}
+
+
 @dataclass
 class Tool:
     name: str
@@ -102,16 +117,18 @@ class Registry:
         Scoping is by omission rather than refusal: a villager is never shown
         that `night_kill` exists, and a day turn is never shown a night action.
         Hiding is the cheaper half of the whitelist gate -- what is never
-        offered is rarely invented.
+        offered is rarely invented, and a referee that advertises an illegal
+        move costs the agent a whole turn being told no.
+
+        The read tools are available on every kind of turn; only the terminal
+        ones are scoped, because the terminal action *is* what the turn is for.
         """
+        allowed = TASK_TERMINALS.get(task) if task is not None else None
         out = []
         for tool in self._tools.values():
             if tool.roles and role not in tool.roles:
                 continue
-            is_night_tool = tool.name.startswith("night_")
-            if task == "night" and tool.name in ("speak", "vote"):
-                continue
-            if task is not None and task != "night" and is_night_tool:
+            if tool.terminal and allowed is not None and tool.name not in allowed:
                 continue
             out.append(tool)
         return out
@@ -334,6 +351,62 @@ def _night_skip(ctx: ToolContext) -> ToolResult:
     return ToolResult("you did nothing tonight", data=record)
 
 
+def _night_protect(ctx: ToolContext, target_id: int) -> ToolResult:
+    record = ctx.state.apply_night_action(ctx.player_id, "night_protect", target_id)
+    return ToolResult(f"you protected player {target_id}", data=record)
+
+
+# ------------------------------------------------- offices and last words
+
+def _campaign_run(ctx: ToolContext, content: str) -> ToolResult:
+    return ToolResult(content, data={"content": content, "running": True})
+
+
+def _campaign_pass(ctx: ToolContext) -> ToolResult:
+    return ToolResult("you are not standing for sheriff", data={"running": False})
+
+
+def _campaign_vote(ctx: ToolContext, target_id: int) -> ToolResult:
+    st = ctx.state
+    if target_id not in st.sheriff_candidates:
+        raise SchemaError(
+            f"player {target_id} is not standing; candidates are {st.sheriff_candidates}"
+        )
+    return ToolResult(f"you voted player {target_id} for sheriff",
+                      data={"target_id": target_id})
+
+
+def _badge_transfer(ctx: ToolContext, target_id: int) -> ToolResult:
+    st = ctx.state
+    if target_id not in st.alive or target_id == ctx.player_id:
+        raise SchemaError(
+            f"player {target_id} cannot take the badge; living players are "
+            f"{st.alive_sorted()}"
+        )
+    return ToolResult(f"you passed the badge to player {target_id}",
+                      data={"target_id": target_id})
+
+
+def _badge_tear(ctx: ToolContext) -> ToolResult:
+    return ToolResult("you tore up the badge", data={"target_id": None})
+
+
+def _last_words(ctx: ToolContext, content: str) -> ToolResult:
+    return ToolResult(content, data={"content": content})
+
+
+def _hunter_shoot(ctx: ToolContext, target_id: int) -> ToolResult:
+    st = ctx.state
+    legal = st.hunter_targets()
+    if target_id not in legal:
+        raise SchemaError(f"player {target_id} cannot be shot; you may take {legal}")
+    return ToolResult(f"you shot player {target_id}", data={"target_id": target_id})
+
+
+def _hunter_hold(ctx: ToolContext) -> ToolResult:
+    return ToolResult("you did not fire", data={"target_id": None})
+
+
 def build_registry() -> Registry:
     return Registry(
         [
@@ -447,12 +520,94 @@ def build_registry() -> Registry:
                 roles=("witch",),
             ),
             Tool(
+                "night_protect",
+                "GUARD ONLY, at night: protect a living player from the wolves. "
+                "You may never protect the same player two nights running. "
+                "ENDS YOUR TURN.",
+                {"target_id": {"type": "int",
+                               "description": "a living player, not last night's charge"}},
+                _night_protect,
+                terminal=True,
+                roles=("guard",),
+            ),
+            Tool(
                 "night_skip",
                 "At night: do nothing this night. ENDS YOUR TURN.",
                 {},
                 _night_skip,
                 terminal=True,
-                roles=("seer", "werewolf", "witch"),
+                roles=("seer", "werewolf", "witch", "guard"),
+            ),
+            # --- the election ------------------------------------------
+            Tool(
+                "campaign_run",
+                "Stand for sheriff and make your campaign speech. The sheriff "
+                "speaks first each day and casts 1.5 votes. Candidates do not "
+                "vote in the election. ENDS YOUR TURN.",
+                {"content": {"type": "str", "max_len": SPEECH_MAX_CHARS,
+                             "non_empty": True,
+                             "description": "why the table should elect you"}},
+                _campaign_run,
+                terminal=True,
+            ),
+            Tool(
+                "campaign_pass",
+                "Stand down: do not run for sheriff. You keep your vote in the "
+                "election. ENDS YOUR TURN.",
+                {},
+                _campaign_pass,
+                terminal=True,
+            ),
+            Tool(
+                "campaign_vote",
+                "Vote for one of the candidates for sheriff. ENDS YOUR TURN.",
+                {"target_id": {"type": "int", "description": "a standing candidate"}},
+                _campaign_vote,
+                terminal=True,
+            ),
+            Tool(
+                "badge_transfer",
+                "SHERIFF ONLY, on your death: pass the badge to a living player. "
+                "ENDS YOUR TURN.",
+                {"target_id": {"type": "int", "description": "a living player"}},
+                _badge_transfer,
+                terminal=True,
+            ),
+            Tool(
+                "badge_tear",
+                "SHERIFF ONLY, on your death: destroy the badge so nobody "
+                "inherits it. ENDS YOUR TURN.",
+                {},
+                _badge_tear,
+                terminal=True,
+            ),
+            # --- dying ---------------------------------------------------
+            Tool(
+                "last_words",
+                "You are dead. Say one last thing to the table; nobody can "
+                "question you about it. ENDS YOUR TURN.",
+                {"content": {"type": "str", "max_len": SPEECH_MAX_CHARS,
+                             "non_empty": True,
+                             "description": "your final speech"}},
+                _last_words,
+                terminal=True,
+            ),
+            Tool(
+                "hunter_shoot",
+                "HUNTER ONLY, on your death: take one living player with you. "
+                "ENDS YOUR TURN.",
+                {"target_id": {"type": "int", "description": "a living player"}},
+                _hunter_shoot,
+                terminal=True,
+                roles=("hunter",),
+            ),
+            Tool(
+                "hunter_hold",
+                "HUNTER ONLY, on your death: do not fire. ENDS YOUR TURN.",
+                {},
+                _hunter_hold,
+                terminal=True,
+                roles=("hunter",),
             ),
         ]
     )

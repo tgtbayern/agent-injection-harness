@@ -38,7 +38,11 @@ NIGHT_ACTIONS: dict[str, set[str]] = {
     "seer": {"night_check", "night_skip"},
     "werewolf": {"night_kill", "night_skip"},
     "witch": {"night_save", "night_poison", "night_skip"},
+    "guard": {"night_protect", "night_skip"},
     "villager": set(),
+    # The hunter has no night turn. Its one action is a reaction to its own
+    # death, and it happens in daylight (Phase.HUNTER_SHOOT).
+    "hunter": set(),
 }
 
 
@@ -82,6 +86,9 @@ class NightPhase:
         if role is Role.SEER and not self.legal_targets(to_player_id(
                 self.manager.current_actor.id)):
             actions.discard("night_check")
+        if role is Role.GUARD and not self.legal_targets(to_player_id(
+                self.manager.current_actor.id)):
+            actions.discard("night_protect")
         return actions
 
     def legal_targets(self, player_id: int) -> list[int]:
@@ -136,6 +143,8 @@ class NightPhase:
             return self._wolf(player_id, target_id)
         if role is Role.WITCH:
             return self._witch(player_id, name, target_id)
+        if role is Role.GUARD:
+            return self._guard(player_id, target_id)
         return self._seer(player_id, target_id)
 
     # ---- per role -------------------------------------------------------
@@ -153,6 +162,24 @@ class NightPhase:
         return self._record(player_id, Role.SEER, "night_check", target_id,
                             "werewolf" if is_wolf else "not a werewolf",
                             extra={"is_wolf": is_wolf})
+
+    def _guard(self, player_id: int, target_id: int) -> dict:
+        """Protect one living player. The no-repeat rule is the library's.
+
+        `legal_targets` already drops last night's charge, because the library's
+        `get_available_targets` does -- so the refusal here is a backstop for a
+        target that was never offered, not a second implementation of the rule.
+        """
+        legal = self.legal_targets(player_id)
+        if target_id not in legal:
+            raise ValueError(
+                f"player {target_id} cannot be protected tonight "
+                f"(you may protect {legal}; never the same player twice running)"
+            )
+        actor = self.manager.current_actor
+        self.manager.submit_action(actor.id, to_engine_id(target_id))
+        return self._record(player_id, Role.GUARD, "night_protect", target_id,
+                            "protected")
 
     def _wolf(self, player_id: int, target_id: int) -> dict:
         legal = self.legal_targets(player_id)

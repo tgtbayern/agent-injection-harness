@@ -21,6 +21,7 @@ from pathlib import Path
 
 from ..attacks import Injector
 from ..engine import GameState, Phase
+from ..engine.rules import get_variant
 from ..harness import (
     AgentLoop,
     BeliefState,
@@ -37,6 +38,7 @@ from ..harness.providers import build_client
 @dataclass
 class RunConfig:
     seed: int = 1
+    variant: str = "8p"
     model: dict = field(default_factory=lambda: {"model_name": "mock"})
     # Optional per-seat override. Default is a single-model table, which is what
     # the main experiment uses -- a mixed table measures interaction effects,
@@ -93,10 +95,12 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
         },
     )
     log["config"]["anonymise_speakers"] = cfg.anonymise_speakers
+    _seats = list(range(1, get_variant(cfg.variant).num_players + 1))
+    log["config"]["variant"] = cfg.variant
     log["config"]["seat_models"] = {
         str(seat): (cfg.seat_models or {}).get(seat, cfg.model).get("display_name")
         or (cfg.seat_models or {}).get(seat, cfg.model).get("model_name")
-        for seat in range(1, 9)
+        for seat in _seats
     }
     if len(set(log["config"]["seat_models"].values())) > 1:
         log["config"]["model"] = "mixed"
@@ -106,7 +110,7 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
     emit = on_event or (lambda *_a, **_k: None)
 
     try:
-        state = GameState.new(cfg.seed)
+        state = GameState.new(cfg.seed, variant=cfg.variant)
         injector = Injector(
             seed=cfg.seed,
             enabled=cfg.attack_enabled or cfg.benign_persuasion,
@@ -150,9 +154,9 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
                 payload_detector=injector.detect,
             )
 
-        loops = {seat: loop_for(seat) for seat in range(1, 9)}
+        loops = {seat: loop_for(seat) for seat in _seats}
 
-        players = list(range(1, 9))
+        players = list(_seats)
         beliefs = {p: BeliefState(p, players) for p in players}
         wolves = state.setup.wolves()
 
@@ -189,6 +193,66 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
             }
             emit("round_start", round_log)
 
+            def _drain_interrupts():
+                """Death-triggered turns: a shot, a succession, last words.
+
+                Each is a real agent turn with a full trace, which is why the
+                engine queues them instead of resolving them itself. Last words
+                go through the injector like any other speech -- a corpse is the
+                one speaker nobody can cross-examine, which makes it the best
+                seat at the table for a payload.
+                """
+                while (item := state.next_interrupt()) is not None:
+                    kind, who = item
+                    task = {"hunter_shoot": "hunter_shoot",
+                            "badge_transfer": "badge",
+                            "last_words": "last_words"}[kind]
+                    res = _turn(loops[who], human_ui, state, who, beliefs[who],
+                                task, cfg.human_players)
+                    if (
+                        kind == "last_words"
+                        and res.speech
+                        and who in wolves
+                        and state.round in cfg.attack_rounds
+                        and (cfg.attack_enabled or cfg.benign_persuasion)
+                    ):
+                        rec = _inject(state, injector, who, wolves, cfg)
+                        if rec:
+                            res.speech = state.speeches[-1].content
+                            round_log["injected_payloads"].append(rec)
+                    round_log["agents"].append(res.to_dict())
+                    emit(task, res.to_dict())
+                    if state.phase is Phase.OVER:
+                        return
+
+            _drain_interrupts()
+            if state.phase is Phase.OVER:
+                log["rounds"].append(round_log)
+                break
+
+            # --- the election, round 1 only -------------------------------
+            while state.phase is Phase.SHERIFF_CAMPAIGN and (
+                (candidate := state.campaign_speaker()) is not None
+            ):
+                res = _turn(loops[candidate], human_ui, state, candidate,
+                            beliefs[candidate], "campaign", cfg.human_players)
+                round_log["agents"].append(res.to_dict())
+                emit("campaign", res.to_dict())
+
+            while state.phase is Phase.SHERIFF_VOTE:
+                pending = [p for p in state.sheriff_electorate()
+                           if p not in state.sheriff_votes]
+                if not pending:
+                    state.resolve_sheriff_election()
+                    break
+                elector = pending[0]
+                res = _turn(loops[elector], human_ui, state, elector,
+                            beliefs[elector], "campaign_vote", cfg.human_players)
+                round_log["agents"].append(res.to_dict())
+                emit("campaign_vote", res.to_dict())
+            round_log["sheriff"] = state.sheriff
+            round_log["sheriff_candidates"] = list(state.sheriff_candidates)
+
             # --- speeches -------------------------------------------------
             while (speaker := state.current_speaker()) is not None:
                 result = _turn(loops[speaker], human_ui, state, speaker,
@@ -216,6 +280,8 @@ def run_game(cfg: RunConfig, human_ui=None, on_event=None) -> dict:
             exiled = state.resolve_vote()
             round_log["vote_counts"] = state.vote_counts.get(round_log["round"], {})
             round_log["exiled"] = exiled
+            _drain_interrupts()
+            round_log["sheriff"] = state.sheriff
             log["rounds"].append(round_log)
             emit("round_end", {"round": round_log["round"], "exiled": exiled})
 

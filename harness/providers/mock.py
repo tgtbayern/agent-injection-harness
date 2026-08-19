@@ -37,7 +37,27 @@ _ACTIONS = re.compile(r"You may call: (.+)")
 _VICTIMS = re.compile(r"The wolves attacked: \[([\d, ]*)\]")
 _ROUND = re.compile(r"=== ROUND (\d+)")
 _ALIVE = re.compile(r"Alive: \[([\d, ]*)\]")
+_CANDIDATES = re.compile(r"[Tt]he candidates are \[([\d, ]*)\]")
+
+
+def _int_list(pattern, text) -> list[int]:
+    m = pattern.search(text)
+    if not m or not m.group(1).strip():
+        return []
+    return [int(x) for x in m.group(1).split(",") if x.strip()]
 _TASK_SPEAK = "it is your turn to speak"
+# The offices and the death turns. Matched on the task line the context builder
+# writes, which is the only thing in the prompt that says what kind of turn
+# this is. A task the scripted client does not recognise is not a crash -- it
+# falls through to the recovery default -- but it does burn a whole turn's
+# retries, so every task the runner can start is listed here.
+_TASK_MARKERS = {
+    "campaign": "the sheriff election is open",
+    "campaign_vote": "elect a sheriff",
+    "last_words": "you are dead",
+    "hunter_shoot": "you are the hunter and you have died",
+    "badge": "you held the badge and you have died",
+}
 _BLOCKED = "[guard]"
 
 
@@ -75,6 +95,21 @@ class MockClient(LLMClient):
         speaking = _TASK_SPEAK in prompt
         night = _NIGHT.search(prompt) is not None
         retry_reason = _last_block_reason(messages)
+
+        lowered = prompt.lower()
+        office = next(
+            (task for task, marker in _TASK_MARKERS.items() if marker in lowered),
+            None,
+        )
+        if office is not None:
+            call = self._decide_office(office, rng, me, alive, prompt)
+            text = call.raw_arguments or ""
+            return LLMResponse(
+                text=text, tool_calls=[call],
+                prompt_tokens=max(1, len(prompt) // 4),
+                completion_tokens=max(1, len(text) // 4),
+                latency_ms=self.latency_ms, model="mock",
+            )
 
         if night:
             call = self._decide_night(rng, me, role, prompt, retry_reason)
@@ -174,6 +209,39 @@ class MockClient(LLMClient):
         return best if best is not None else rng.choice(targets)
 
     # ---- policy ---------------------------------------------------------
+
+    def _decide_office(self, task, rng, me, alive, prompt):
+        """Scripted play for the offices and the death turns.
+
+        Fixed rates, not judgement: like the rest of this client these are
+        constants chosen by hand, which is exactly why nothing read off a mock
+        run is ever reported as a finding.
+        """
+        others = [p for p in alive if p != me] or [me]
+        if task == "campaign":
+            if rng.random() < 0.4:
+                return _mk("campaign_run", {
+                    "content": f"I am player {me}. I will run the day fairly "
+                               "and share what I learn."
+                })
+            return _mk("campaign_pass", {})
+        if task == "campaign_vote":
+            cands = _int_list(_CANDIDATES, prompt)
+            pool = [c for c in cands if c != me] or others
+            return _mk("campaign_vote", {"target_id": rng.choice(pool)})
+        if task == "last_words":
+            return _mk("last_words", {
+                "content": f"This is player {me}. Watch who pushed hardest to "
+                           "get me out today."
+            })
+        if task == "hunter_shoot":
+            if rng.random() < 0.8:
+                return _mk("hunter_shoot", {"target_id": rng.choice(others)})
+            return _mk("hunter_hold", {})
+        # badge
+        if rng.random() < 0.75:
+            return _mk("badge_transfer", {"target_id": rng.choice(others)})
+        return _mk("badge_tear", {})
 
     def _decide(self, *, rng, me, role, round_no, alive, step, speaking, prompt,
                 retry_reason, directive, complies) -> ToolCall:
