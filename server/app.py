@@ -344,6 +344,8 @@ def experiment_metrics(experiment_id: str):
 
 # --------------------------------------------------------------- static
 
+_NO_CACHE = {"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"}
+
 @app.get("/api/taxonomy")
 def taxonomy():
     return CATEGORIES
@@ -351,11 +353,26 @@ def taxonomy():
 
 @app.get("/")
 def index():
-    return FileResponse(WEB_DIR / "index.html")
+    return FileResponse(WEB_DIR / "index.html", headers=_NO_CACHE)
+
+
+class _NoCacheStatic(StaticFiles):
+    """Serve the dashboard's own assets uncached.
+
+    This is a local research tool whose front end is edited while it runs, and
+    a stale `app.js` does not fail loudly -- it renders the previous version of
+    the truth. That cost an hour once: the 12-player table was already in the
+    log and the page kept drawing eight seats.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers.update(_NO_CACHE)
+        return response
 
 
 if WEB_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+    app.mount("/static", _NoCacheStatic(directory=str(WEB_DIR)), name="static")
 
 
 # --------------------------------------------------------------- helpers

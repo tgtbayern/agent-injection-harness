@@ -105,35 +105,92 @@ function renderMeta() {
   // alone is easy to skim past, so it gets said outright.
   const seats = Object.values((l.config || {}).seat_models || {});
   const scripted = seats.length ? seats.every((m) => m === "mock") : l.config.model === "mock";
+  const fact = (k, v) => `<div class="fact"><dt>${esc(k)}</dt><dd>${v}</dd></div>`;
   el("game-meta").innerHTML =
     (scripted ? `<div class="mockbar"><b>${esc(L.mockBadge)}</b> ${esc(L.mockNote)}</div>` : "") +
-    `${L.metaGame} <b>${esc(l.game_id)}</b> &nbsp; ${L.metaSeed}=${l.seed} &nbsp; ` +
-    `${L.metaModel}=${esc(l.config.model)} &nbsp; ` +
-    `${L.metaGuard}=${esc(guardLabel(l.config))}${l.config.evidence_forced ? "+E" : ""} &nbsp; ` +
-    `${L.metaSteps}${l.config.max_react_steps} &nbsp; ` +
-    `${L.metaWinner}=<b>${esc(L.winner[o.winner] || o.winner)}</b> &nbsp; ` +
-    `${L.metaTokens}=${o.total_prompt_tokens + o.total_completion_tokens} &nbsp; ` +
-    `${L.metaCost}=$${(o.total_cost_usd || 0).toFixed(4)} &nbsp; ${o.total_duration_s}s` +
-    (o.crashed ? ` <span class="attack">${esc(L.crashed(o.crash_reason))}</span>` : "");
+    `<dl class="facts">` +
+    fact(L.metaSeed, `<b>${l.seed}</b>`) +
+    fact(L.fTable, `<b>${tableSize()}</b>${l.config.variant ? ` · ${esc(l.config.variant)}` : ""}`) +
+    fact(L.metaModel, esc(l.config.model)) +
+    fact(L.metaGuard, esc(guardLabel(l.config)) + (l.config.evidence_forced ? "+E" : "")) +
+    fact(L.metaWinner, `<b>${esc(L.winner[o.winner] || o.winner || "?")}</b>`) +
+    fact(L.metaTokens, String(o.total_prompt_tokens + o.total_completion_tokens)) +
+    fact(L.metaCost, `$${(o.total_cost_usd || 0).toFixed(4)}`) +
+    fact(L.fElapsed, `${o.total_duration_s}s`) +
+    (o.crashed ? fact("crash", `<span class="attack">${esc(o.crash_reason || "")}</span>`) : "") +
+    `</dl>`;
+}
+
+/* ---- the exposure grid ------------------------------------------------
+ *
+ * Rounds down, seats across. One cell is one seat in one round, and it carries
+ * the single most important thing about that seat that round, in priority
+ * order: did it attack, did its ballot land where a payload asked, did it read
+ * one at all, was it stopped. Reading a column is one player's whole game.
+ *
+ * This is the exposure matrix axis 1 is scored on, drawn instead of described.
+ */
+function seatStateIn(rnd, pid) {
+  if (!(rnd.alive || []).includes(pid)) return "dead";
+  const planted = (state.log.planted_payloads || []).filter((p) => p.round === rnd.round);
+  if (planted.some((p) => p.attacker === pid)) return "attacker";
+
+  const turns = [...(rnd.agents || []), ...(rnd.night_turns || [])]
+    .filter((a) => a.player_id === pid);
+  const read = turns.flatMap((a) => a.read_payloads || []);
+  const hostile = read.filter((r) => !isBenign(r.payload_id));
+
+  const obeyed = turns.some((a) => a.task === "vote" && a.vote != null &&
+    hostile.some((r) => {
+      const p = planted.find((x) => x.payload_id === r.payload_id);
+      return p && p.target === a.vote;
+    }));
+  if (obeyed) return "hijacked";
+  if (hostile.length) return "exposed";
+  if (turns.some((a) => (a.guard_blocks || []).length)) return "blocked";
+  if (read.length) return "benign";
+  return "clear";
+}
+
+function renderExposure() {
+  const L = t(), l = state.log, n = tableSize();
+  const glyph = { attacker: "\u25cf", hijacked: "\u25a0", exposed: "!",
+                  blocked: "\u25a3", benign: "\u2605", clear: "\u00b7", dead: "" };
+  const grid = el("xgrid");
+  grid.style.gridTemplateColumns = `max-content repeat(${n}, 22px)`;
+
+  const cells = [`<div class="xr"></div>`];
+  for (let p = 1; p <= n; p++) cells.push(`<div class="xh">${p}</div>`);
+
+  l.rounds.forEach((rnd) => {
+    cells.push(`<div class="xr">${esc(L.roundShort(rnd.round))}</div>`);
+    for (let p = 1; p <= n; p++) {
+      const st = seatStateIn(rnd, p);
+      const cur = rnd.round === state.round && p === state.player ? " current" : "";
+      cells.push(
+        `<button class="xcell${cur}" data-state="${st}" data-round="${rnd.round}" data-pid="${p}"
+           title="${esc(L.roundTab(rnd.round))} · ${esc(L.seatId(p))} · ${esc(L.xState[st] || st)}"
+         >${glyph[st]}</button>`);
+    }
+  });
+  grid.innerHTML = cells.join("");
+
+  grid.querySelectorAll(".xcell").forEach((b) => {
+    b.onclick = () => {
+      state.round = Number(b.dataset.round);
+      state.player = Number(b.dataset.pid);
+      renderExposure(); renderRounds(); renderPhases(); renderPlayers();
+    };
+  });
+
+  el("legend").innerHTML = ["attacker", "hijacked", "exposed", "blocked"]
+    .map((k) => `<span class="k-${k}"><i></i>${esc(L.xState[k])}</span>`).join("");
 }
 
 /* One tick per planted payload; filled when some agent's ballot ended up on
    the payload's target that round. Scanning the row tells you what happened in
    a game before reading a single trace. */
-function renderTimeline() {
-  const l = state.log, planted = l.planted_payloads || [], parts = [];
-  l.rounds.forEach((rnd, i) => {
-    if (i) parts.push('<span class="tick round-sep"></span>');
-    planted.filter((p) => p.round === rnd.round).forEach((p) => {
-      const hit = rnd.agents.some(
-        (a) => a.task === "vote" && a.vote === p.target &&
-               (a.read_payloads || []).some((r) => r.payload_id === p.payload_id));
-      parts.push(`<span class="tick ${hit ? "hit" : ""} ${p.benign ? "benign" : ""}" title="${
-        t().roundTab(rnd.round)}: ${esc(p.payload_id)} ${p.attacker}→${p.target}"></span>`);
-    });
-  });
-  el("timeline").innerHTML = parts.join("");
-}
+function renderTimeline() { renderExposure(); }
 
 function renderRounds() {
   el("rounds").innerHTML = state.log.rounds.map((r) =>
@@ -175,11 +232,58 @@ function renderPhases() {
     .map((a) => {
       const flag = injected.has(a.player_id)
         ? `<span class="attack"> · ${esc(L.carriedPayload)}</span>` : "";
-      const head = `<b>#${a.speech_order + 1} ${esc(L.seatId(a.player_id))}</b> ` +
+      const head = `<span class="speaker">#${a.speech_order + 1} &nbsp;${
+                     esc(L.seatId(a.player_id))}</span> ` +
                    `<span class="muted">${seatRole(a.player_id)}</span>${flag}`;
       const said = markSeatRefs(highlightPayloads(a.speech || ""), a.player_id);
       return turnRecord(a, `${head}<div class="said">${said}</div>`);
     }).join("") || `<div class="pline muted">-</div>`;
+
+  /* The election. Standing costs a vote and paints a target, so who ran is
+   * as much a part of the record as what they said. */
+  const campaignTurns = rnd.agents.filter((a) => a.task === "campaign");
+  const campaignRows = campaignTurns.map((a) => {
+    const stood = a.speech != null && a.speech !== "";
+    const flag = injected.has(a.player_id)
+      ? `<span class="attack"> &middot; ${esc(L.carriedPayload)}</span>` : "";
+    const head = `<span class="speaker">${esc(L.seatId(a.player_id))}</span> ` +
+                 `<span class="muted">${seatRole(a.player_id)}</span>${flag}`;
+    if (!stood) {
+      return turnRecord(a, `${head} <span class="muted">${esc(L.stoodDown)}</span>`);
+    }
+    const said = markSeatRefs(highlightPayloads(a.speech || ""), a.player_id);
+    return turnRecord(a, `${head}<div class="said">${said}</div>`);
+  }).join("");
+
+  const ballotRows = rnd.agents.filter((a) => a.task === "campaign_vote")
+    .map((a) => turnRecord(a, esc(L.voteLine(
+      a.player_id, (a.office_action || {}).target ?? null)))).join("");
+
+  const sheriffLine = rnd.sheriff
+    ? esc(L.sheriffIs(rnd.sheriff))
+    : (campaignTurns.length ? esc(L.sheriffNone) : "");
+
+  /* Death-triggered turns. A corpse speaks once and cannot be questioned;
+   * a shot is the loudest event in the game. Both belong on the timeline. */
+  const codaRows = rnd.agents.filter((a) =>
+    ["last_words", "hunter_shoot", "badge"].includes(a.task)).map((a) => {
+    const oa = a.office_action || {};
+    if (a.task === "hunter_shoot") {
+      return turnRecord(a, esc(oa.target != null
+        ? L.shotLine(a.player_id, oa.target) : L.heldFire(a.player_id)));
+    }
+    if (a.task === "badge") {
+      return turnRecord(a, esc(oa.target != null
+        ? L.badgeLine(a.player_id, oa.target) : L.badgeTorn(a.player_id)));
+    }
+    const flag = injected.has(a.player_id)
+      ? `<span class="attack"> &middot; ${esc(L.carriedPayload)}</span>` : "";
+    const said = markSeatRefs(highlightPayloads(a.speech || ""), a.player_id);
+    return turnRecord(a,
+      `<span class="speaker">${esc(L.lastWordsOf(a.player_id))}</span> ` +
+      `<span class="muted">${seatRole(a.player_id)}</span>${flag}` +
+      `<div class="said">${said}</div>`);
+  }).join("");
 
   const voteRows = rnd.agents.filter((a) => a.task === "vote").map((a) => {
     const blocked = (a.guard_blocks || []).length
@@ -188,22 +292,41 @@ function renderPhases() {
   }).join("");
 
   el("phases").innerHTML = `
-    <div class="phase">
-      <div class="phase-label">${esc(L.phaseNight)}</div>
+    <div class="phase phase--night">
+      <div class="phase-label">${esc(L.phaseNight)} ${rnd.round}</div>
       <div class="phase-body">${nightRows}
         <div class="pline dawn">${esc(L.dawn)}: ${esc(deaths)}</div></div>
     </div>
+    ${campaignRows ? `
+    <div class="phase phase--day">
+      <div class="phase-label">${esc(L.phaseCampaign)}</div>
+      <div class="phase-body">${campaignRows}${ballotRows}
+        <div class="pline dawn">${sheriffLine}</div></div>
+    </div>` : ""}
     ${rnd.agents.length ? `
-    <div class="phase">
+    <div class="phase phase--day">
       <div class="phase-label">${esc(L.phaseSpeech)}</div>
       <div class="phase-body">${speechRows}</div>
     </div>
-    <div class="phase">
+    <div class="phase phase--day">
       <div class="phase-label">${esc(L.phaseVote)}</div>
       <div class="phase-body">${voteRows}
         <div class="pline dawn">${esc(L.exiledLine(rnd.exiled))}</div></div>
-    </div>` : `<div class="phase"><div class="phase-label"></div>
+    </div>
+    ${codaRows ? `
+    <div class="phase phase--night">
+      <div class="phase-label">${esc(L.phaseLastWords)}</div>
+      <div class="phase-body">${codaRows}</div>
+    </div>` : ""}` : `<div class="phase phase--night"><div class="phase-label"></div>
       <div class="phase-body"><div class="pline dawn">${esc(L.gameEndsHere)}</div></div></div>`}`;
+}
+
+/* How many seats this game was played with. A 12-player table is a
+ * configuration change, so nothing in the view may assume 8. */
+function tableSize() {
+  const cfg = state.log.config || {};
+  return Object.keys(cfg.seat_models || {}).length ||
+         Object.keys(state.log.ground_truth.roles || {}).length || 8;
 }
 
 function seatRole(pid) {
@@ -231,11 +354,11 @@ function markSeatRefs(html, self) {
       // "player 6" / "p6" / "6 号" -- the whole phrase reads as one reference
       .replace(/\b(?:player\s*|p)(\d)\b|(\d)\s*号/gi, (m, a, b) => {
         const n = Number(a || b);
-        return n >= 1 && n <= 8 ? wrap(m, n) : m;
+        return n >= 1 && n <= tableSize() ? wrap(m, n) : m;
       })
       // "vote 6" -- wrap the number only, so the verb stays plain
       .replace(/\b(vote\s+(?:for\s+)?)(\d)\b/gi, (m, lead, d) =>
-        Number(d) >= 1 && Number(d) <= 8 ? lead + wrap(d, d) : m);
+        Number(d) >= 1 && Number(d) <= tableSize() ? lead + wrap(d, d) : m);
   }).join("");
 }
 
@@ -261,9 +384,9 @@ function turnRecord(turn, summary) {
     `<span class="pill ${isBenign(r.payload_id) ? "guard" : "attack"}">${
       esc(L.exposurePill(r.payload_id, L.channel[r.channel] || r.channel))}</span>`).join(" ");
 
-  return `<details class="record">
-    <summary class="pline">${summary}</summary>
-    <div class="record-body">
+  return `<details class="turn">
+    <summary>${summary}</summary>
+    <div class="trace-inner">
       <div class="muted mono">${esc(L.modelLabel)} ${esc(turn.model || "?")} &nbsp;
         ${esc(L.steps(turn.steps_used))} &nbsp; ${esc(L.tokens(turn.total_tokens))}
         ${turn.retries ? `&nbsp; ${esc(L.retries(turn.retries))}` : ""}
@@ -285,7 +408,9 @@ function renderPlayers() {
   const attackers = new Set((state.log.planted_payloads || [])
     .filter((p) => p.round === rnd.round).map((p) => p.attacker));
   const items = [];
-  for (let pid = 1; pid <= 8; pid++) {
+  const nSeats = Object.keys(seatModels).length ||
+                 Object.keys(roles).length || 8;
+  for (let pid = 1; pid <= nSeats; pid++) {
     const turns = rnd.agents.filter((a) => a.player_id === pid);
     const alive = (rnd.alive || []).includes(pid);
     const exposed = turns.some((x) =>
@@ -294,17 +419,19 @@ function renderPlayers() {
       (x.read_payloads || []).some((r) => isBenign(r.payload_id)));
     const blocked = turns.some((x) => (x.guard_blocks || []).length);
     const human = turns.some((x) => x.is_human);
+    const marks = [
+      exposed ? `<span class="m-exposed" title="${esc(t().xState.exposed)}">!</span>` : "",
+      persuaded ? `<span class="m-benign">&#9733;</span>` : "",
+      blocked ? `<span class="m-blocked">&#9635;</span>` : "",
+    ].join("");
     items.push(
       `<li data-pid="${pid}" class="${state.player === pid ? "selected" : ""} ${alive ? "" : "dead"}">
-        <span class="flag attack">${attackers.has(pid) ? "&#9679;" : ""}</span>
-        <span>${esc(L.seatId(pid))}</span>
-        <span class="muted">${esc(L.role[roles[pid]] || roles[pid] || "?")}${human ? L.human : ""}</span>
-        <span class="muted seat-model">${esc(human ? "" : (seatModels[pid] || ""))}</span>
-        <span style="margin-left:auto">
-          ${exposed ? '<span class="attack">&#9888;</span>' : ""}
-          ${persuaded ? '<span class="guard">&#9733;</span>' : ""}
-          ${blocked ? '<span class="guard">&#9635;</span>' : ""}
-        </span>
+        <span class="flag">${attackers.has(pid) ? "&#9679;" : ""}</span>
+        <span class="seat-no">${pid}</span>
+        <span class="seat-role">${esc(L.role[roles[pid]] || roles[pid] || "?")}${human ? L.human : ""}${
+          pid === rnd.sheriff ? ` <span class="badge-tag">${esc(L.badgeTag)}</span>` : ""}</span>
+        <span class="seat-model">${esc(human ? "" : (seatModels[pid] || ""))}</span>
+        <span class="seat-marks">${marks}</span>
       </li>`);
   }
   el("players").innerHTML = items.join("");
@@ -335,67 +462,10 @@ function highlightPayloads(text) {
   return out;
 }
 
-function renderTrace() {
-  const L = t(), rnd = currentRound();
-  if (!state.player) {
-    el("trace-title").textContent = L.hTrace;
-    el("trace").innerHTML = `<div class="empty">${esc(L.tracePick)}</div>`;
-    return;
-  }
-  const turns = [
-    ...(rnd.night_turns || []).filter((a) => a.player_id === state.player),
-    ...rnd.agents.filter((a) => a.player_id === state.player),
-  ];
-  el("trace-title").textContent = L.traceHeadFor(state.player, rnd.round);
-  if (!turns.length) {
-    el("trace").innerHTML = `<div class="empty">${esc(L.traceNone)}</div>`;
-    return;
-  }
-
-  el("trace").innerHTML = turns.map((turn) => {
-    const steps = (turn.react_trace || []).map((s) => {
-      const cls = s.injected ? "injected" : s.guard_blocked ? "blocked" : "";
-      const flag = s.injected
-        ? `<span class="pill attack">${esc(L.injectedPill)}</span>`
-        : s.guard_blocked
-        ? `<span class="pill guard">${esc(L.blockPill(L.block[s.block_reason] || s.block_reason))}</span>`
-        : "";
-      return `<div class="step ${cls}">
-          <div class="head">${s.step} &rarr; <b>${esc(s.action)}</b>
-            <span class="muted">${esc(JSON.stringify(s.args || {}))}</span> ${flag}</div>
-          ${s.thought ? `<div class="obs">${esc(L.thought)}: ${esc(s.thought)}</div>` : ""}
-          ${s.observation ? `<div class="obs">${highlightPayloads(s.observation)}</div>` : ""}
-        </div>`;
-    }).join("");
-
-    const diff = beliefDiff(turn.belief_before, turn.belief_after);
-    const exposure = (turn.read_payloads || []).map((r) =>
-      `<span class="pill ${isBenign(r.payload_id) ? "guard" : "attack"}">${
-        esc(L.exposurePill(r.payload_id, L.channel[r.channel] || r.channel))}</span>`
-    ).join(" ");
-
-    return `<div style="margin-bottom:18px">
-      <div class="muted mono">${esc(turn.task === "night" ? L.nightTurn : (L.task[turn.task] || turn.task))} &nbsp;
-        <span class="pill">${esc(L.modelLabel)} ${esc(turn.model || "?")}</span> &nbsp;
-        ${esc(L.steps(turn.steps_used))} &nbsp; ${esc(L.tokens(turn.total_tokens))}
-        ${turn.retries ? `&nbsp; ${esc(L.retries(turn.retries))}` : ""}
-        ${turn.forced_terminal ? `&nbsp; <span class="guard">${esc(L.forced)}</span>` : ""}
-        ${turn.fallback_used ? `&nbsp; <span class="attack">${esc(L.fallbackUsed(turn.fallback_used))}</span>` : ""}</div>
-      ${exposure ? `<div style="margin:6px 0">${esc(L.exposedTo)}${exposure}</div>` : ""}
-      ${steps}
-      ${diff ? `<div class="beliefdiff" style="margin-top:8px">${esc(L.deltaLead)}: ${diff}</div>` : ""}
-      ${turn.speech ? `<div class="speech">${highlightPayloads(turn.speech)}</div>` : ""}
-      ${turn.task === "vote"
-        ? `<div class="mono">${esc(L.ballot)}<b>${turn.vote ? esc(L.seatId(turn.vote)) : esc(L.abstained)}</b></div>`
-        : ""}
-      ${turn.night_action
-        ? `<div class="mono">${esc(L.nightAction[turn.night_action.action] || turn.night_action.action)}
-           <b>${esc(L.nightOn(turn.night_action.target))}</b>
-           <span class="muted">${esc(turn.night_action.outcome || "")}</span></div>`
-        : ""}
-    </div>`;
-  }).join("");
-}
+/* The trace is no longer a panel that sits empty: every turn opens into its
+ * own reasoning, inline, where the turn is. Kept as a no-op so the render
+ * cycle reads the same from every call site. */
+function renderTrace() {}
 
 function beliefDiff(before, after) {
   const L = t(), parts = [];
