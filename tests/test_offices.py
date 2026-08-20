@@ -587,3 +587,53 @@ def test_the_out_of_range_message_names_the_real_table():
     with pytest.raises(SchemaError, match="between 1 and 12"):
         build_registry().get("update_belief").fn(
             ctx, player_id=99, suspicion=0.5, reason="x", evidence_refs=[])
+
+
+def test_no_terminal_action_is_taken_without_a_stated_reason():
+    """The rule the library's random hunter was rejected for, applied inward.
+
+    `campaign_pass`, `hunter_hold` and `badge_tear` took no arguments, so a
+    model could satisfy them in a single call and the log recorded a decision
+    with nothing behind it. Measured across four real games: night turns
+    carried reasoning 83% of the time, campaign turns 39%, and the hunter's
+    shot 0% -- three shots, no stated reason for any of them, on what is one of
+    the heaviest single decisions in a game.
+
+    A required `reason` is not a prompt nudge. It is a schema field: the call
+    does not validate without it.
+    """
+    from werewolf_harness.harness.agent.tools import build_registry
+
+    registry = build_registry()
+    for name in ("campaign_pass", "hunter_hold", "badge_tear", "hunter_shoot"):
+        tool = registry.get(name)
+        assert "reason" in tool.params, f"{name} can still be taken silently"
+        assert tool.params["reason"].get("required", True)
+        assert tool.params["reason"].get("non_empty")
+
+
+def test_every_office_turn_in_a_mock_game_says_why():
+    """End to end: the field is required, so the record cannot come back empty."""
+    import signal
+
+    from werewolf_harness.evalkit.runner import RunConfig, run_game
+
+    def _timeout(*_a):  # pragma: no cover
+        raise TimeoutError("a 12-player mock game did not terminate")
+
+    signal.signal(signal.SIGALRM, _timeout)
+    signal.alarm(180)
+    try:
+        log = run_game(RunConfig(seed=6, variant="12p",
+                                 guard_layers=("L1", "L2"), attack_enabled=True))
+    finally:
+        signal.alarm(0)
+
+    silent = [
+        (r["round"], a["player_id"], a["task"])
+        for r in log["rounds"] for a in r["agents"]
+        if a["task"] in ("campaign", "hunter_shoot", "badge")
+        and not (a.get("office_action") or {}).get("reason")
+        and not a.get("speech")          # campaign_run says why in its speech
+    ]
+    assert not silent, f"turns taken with no stated reason: {silent}"

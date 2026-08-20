@@ -99,6 +99,7 @@ class TurnResult:
             "speech_order": self.speech_order,
             "vote": self.vote,
             "night_action": self.night_action,
+            "office_action": self.office_action,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
@@ -412,6 +413,8 @@ class AgentLoop:
             action = {"name": "campaign_pass"}
         elif name in self._NULL_ALIASES:
             action = {"name": self._NULL_ALIASES[name], "target_id": None}
+        # `reason` never reaches the engine -- it is a log field, and the
+        # engine's job is the world, not the record.
         else:
             action = {"name": name, "target_id": args.get("target_id")}
         try:
@@ -436,15 +439,18 @@ class AgentLoop:
             result.hallucinated_citations = evidence_mod.unsupported_citations(
                 args["content"], speaker=player_id, lookups=lookups
             )
+
         elif name == "campaign_pass":
-            result.speech = None
+            result.office_action = {"action": name, "reason": args.get("reason")}
         elif name in ("campaign_vote", "badge_transfer", "badge_tear",
                       "hunter_shoot", "hunter_hold"):
             # Not a ballot to exile anyone, so it must not land in `result.vote`
             # -- axis 1 counts hijacked *exile* votes and would otherwise be
             # counting elections and gunshots alongside them.
             result.office_action = {
-                "action": name, "target": args.get("target_id")
+                "action": name,
+                "target": args.get("target_id"),
+                "reason": args.get("reason"),
             }
         else:
             result.vote = args.get("target_id")

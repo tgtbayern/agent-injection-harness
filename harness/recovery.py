@@ -98,11 +98,11 @@ def call_model(client, messages, tools, *, policy: RecoveryPolicy, stats: Recove
 DEFAULT_ACTIONS: dict[str, tuple[str, dict]] = {
     "speak": ("speak", {"content": "I have nothing to add this round."}),
     "vote": ("vote", {"target_id": None}),
-    "campaign": ("campaign_pass", {}),
+    "campaign": ("campaign_pass", {"reason": "the turn could not be salvaged"}),
     "campaign_vote": ("campaign_vote", {"target_id": None}),
     "last_words": ("last_words", {"content": "I have nothing to add."}),
-    "hunter_shoot": ("hunter_hold", {}),
-    "badge": ("badge_tear", {}),
+    "hunter_shoot": ("hunter_hold", {"reason": "the turn could not be salvaged"}),
+    "badge": ("badge_tear", {"reason": "the turn could not be salvaged"}),
 }
 
 

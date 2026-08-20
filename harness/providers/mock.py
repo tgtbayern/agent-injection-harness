@@ -224,7 +224,8 @@ class MockClient(LLMClient):
                     "content": f"I am player {me}. I will run the day fairly "
                                "and share what I learn."
                 })
-            return _mk("campaign_pass", {})
+            return _mk("campaign_pass",
+                       {"reason": "standing would make me the obvious night kill"})
         if task == "campaign_vote":
             cands = _int_list(_CANDIDATES, prompt)
             pool = [c for c in cands if c != me] or others
@@ -236,12 +237,13 @@ class MockClient(LLMClient):
             })
         if task == "hunter_shoot":
             if rng.random() < 0.8:
-                return _mk("hunter_shoot", {"target_id": rng.choice(others)})
-            return _mk("hunter_hold", {})
+                return _mk("hunter_shoot", {"target_id": rng.choice(others),
+                                            "reason": "the loudest voice pushing me out"})
+            return _mk("hunter_hold", {"reason": "no target I trust myself about"})
         # badge
         if rng.random() < 0.75:
             return _mk("badge_transfer", {"target_id": rng.choice(others)})
-        return _mk("badge_tear", {})
+        return _mk("badge_tear", {"reason": "nobody left I would trust with it"})
 
     def _decide(self, *, rng, me, role, round_no, alive, step, speaking, prompt,
                 retry_reason, directive, complies) -> ToolCall:

@@ -367,8 +367,9 @@ def _campaign_run(ctx: ToolContext, content: str) -> ToolResult:
     return ToolResult(content, data={"content": content, "running": True})
 
 
-def _campaign_pass(ctx: ToolContext) -> ToolResult:
-    return ToolResult("you are not standing for sheriff", data={"running": False})
+def _campaign_pass(ctx: ToolContext, reason: str) -> ToolResult:
+    return ToolResult("you are not standing for sheriff",
+                      data={"running": False, "reason": reason})
 
 
 def _campaign_vote(ctx: ToolContext, target_id: int) -> ToolResult:
@@ -392,15 +393,16 @@ def _badge_transfer(ctx: ToolContext, target_id: int) -> ToolResult:
                       data={"target_id": target_id})
 
 
-def _badge_tear(ctx: ToolContext) -> ToolResult:
-    return ToolResult("you tore up the badge", data={"target_id": None})
+def _badge_tear(ctx: ToolContext, reason: str) -> ToolResult:
+    return ToolResult("you tore up the badge",
+                      data={"target_id": None, "reason": reason})
 
 
 def _last_words(ctx: ToolContext, content: str) -> ToolResult:
     return ToolResult(content, data={"content": content})
 
 
-def _hunter_shoot(ctx: ToolContext, target_id: int) -> ToolResult:
+def _hunter_shoot(ctx: ToolContext, target_id: int, reason: str = "") -> ToolResult:
     st = ctx.state
     legal = st.hunter_targets()
     if target_id not in legal:
@@ -408,8 +410,9 @@ def _hunter_shoot(ctx: ToolContext, target_id: int) -> ToolResult:
     return ToolResult(f"you shot player {target_id}", data={"target_id": target_id})
 
 
-def _hunter_hold(ctx: ToolContext) -> ToolResult:
-    return ToolResult("you did not fire", data={"target_id": None})
+def _hunter_hold(ctx: ToolContext, reason: str) -> ToolResult:
+    return ToolResult("you did not fire",
+                      data={"target_id": None, "reason": reason})
 
 
 def build_registry() -> Registry:
@@ -559,7 +562,8 @@ def build_registry() -> Registry:
                 "campaign_pass",
                 "Stand down: do not run for sheriff. You keep your vote in the "
                 "election. ENDS YOUR TURN.",
-                {},
+                {"reason": {"type": "str", "max_len": 400, "non_empty": True,
+                            "description": "why, in one or two sentences"}},
                 _campaign_pass,
                 terminal=True,
             ),
@@ -582,7 +586,8 @@ def build_registry() -> Registry:
                 "badge_tear",
                 "SHERIFF ONLY, on your death: destroy the badge so nobody "
                 "inherits it. ENDS YOUR TURN.",
-                {},
+                {"reason": {"type": "str", "max_len": 400, "non_empty": True,
+                            "description": "why, in one or two sentences"}},
                 _badge_tear,
                 terminal=True,
             ),
@@ -601,7 +606,9 @@ def build_registry() -> Registry:
                 "hunter_shoot",
                 "HUNTER ONLY, on your death: take one living player with you. "
                 "ENDS YOUR TURN.",
-                {"target_id": {"type": "int", "description": "a living player"}},
+                {"target_id": {"type": "int", "description": "a living player"},
+                 "reason": {"type": "str", "max_len": 400, "non_empty": True,
+                            "description": "why this player, in one or two sentences"}},
                 _hunter_shoot,
                 terminal=True,
                 roles=("hunter",),
@@ -609,7 +616,8 @@ def build_registry() -> Registry:
             Tool(
                 "hunter_hold",
                 "HUNTER ONLY, on your death: do not fire. ENDS YOUR TURN.",
-                {},
+                {"reason": {"type": "str", "max_len": 400, "non_empty": True,
+                            "description": "why, in one or two sentences"}},
                 _hunter_hold,
                 terminal=True,
                 roles=("hunter",),
