@@ -182,8 +182,10 @@ def speech_id(round_no: int, player_id: int) -> str:
 
 def _query_history(ctx: ToolContext, player_id: int, round: int) -> ToolResult:
     st = ctx.state
-    if player_id not in range(1, 9):
-        raise SchemaError("query_history.player_id must be a player between 1 and 8")
+    if player_id not in range(1, st.num_players + 1):
+        raise SchemaError(
+            f"query_history.player_id must be a player between 1 and {st.num_players}"
+        )
     if round < 1 or round > st.round:
         raise SchemaError(
             f"query_history.round must be between 1 and {st.round} (the current round)"
@@ -289,8 +291,11 @@ def _update_belief(
 ) -> ToolResult:
     if player_id == ctx.player_id:
         raise SchemaError("update_belief cannot target yourself")
-    if player_id not in range(1, 9):
-        raise SchemaError("update_belief.player_id must be a player between 1 and 8")
+    if player_id not in range(1, ctx.state.num_players + 1):
+        raise SchemaError(
+            "update_belief.player_id must be a player between 1 and "
+            f"{ctx.state.num_players}"
+        )
     entry = ctx.belief.update(
         player_id=player_id,
         suspicion=suspicion,

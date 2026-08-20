@@ -530,3 +530,60 @@ def test_a_night_action_never_reaches_another_agent():
         if viewer != seer:
             for check_rec in state.seer_checks:
                 assert f"player {check_rec.target} = " not in text
+
+
+def test_tools_accept_every_seat_at_the_table():
+    """A tool that refuses seat 9 does not merely fail -- it lies.
+
+    `update_belief` and `query_history` had the 8-player table baked into their
+    bounds check, so on a 12-player table they rejected players 9-12 with
+    "must be a player between 1 and 8". An agent that believes its own tools --
+    which is the only sane thing for it to do -- concludes the table is smaller
+    than it is. One did: a wolf was refused three times while trying to record
+    beliefs about its own packmates, reasoned "I see, there are only players
+    1-8", wrote its two surviving teammates out of the game, and voted alone.
+
+    Worse for the experiment, `query_history` is attack path B. Refusing seats
+    9-12 silently removed a third of the table from the channel the whole thing
+    is built to measure.
+    """
+    from werewolf_harness.engine.visibility import get_visible_state
+    from werewolf_harness.harness.agent.belief import BeliefState
+    from werewolf_harness.harness.agent.tools import ToolContext, build_registry
+    from werewolf_harness.harness.schema import SchemaError
+
+    state = _state(variant="12p")
+    registry = build_registry()
+    me = 1
+    ctx = ToolContext(state=state, player_id=me,
+                      belief=BeliefState(me, state.seats()),
+                      view=get_visible_state(state, me))
+
+    for seat in state.seats():
+        if seat == me:
+            continue
+        registry.get("update_belief").fn(
+            ctx, player_id=seat, suspicion=0.5, reason="reachable", evidence_refs=[])
+        registry.get("query_history").fn(ctx, player_id=seat, round=1)
+
+    # ...and the bound still bites one past the end.
+    with pytest.raises(SchemaError):
+        registry.get("update_belief").fn(
+            ctx, player_id=state.num_players + 1, suspicion=0.5,
+            reason="off the table", evidence_refs=[])
+
+
+def test_the_out_of_range_message_names_the_real_table():
+    """The refusal text is the agent's next input, so it has to be true."""
+    from werewolf_harness.engine.visibility import get_visible_state
+    from werewolf_harness.harness.agent.belief import BeliefState
+    from werewolf_harness.harness.agent.tools import ToolContext, build_registry
+    from werewolf_harness.harness.schema import SchemaError
+
+    state = _state(variant="12p")
+    ctx = ToolContext(state=state, player_id=1,
+                      belief=BeliefState(1, state.seats()),
+                      view=get_visible_state(state, 1))
+    with pytest.raises(SchemaError, match="between 1 and 12"):
+        build_registry().get("update_belief").fn(
+            ctx, player_id=99, suspicion=0.5, reason="x", evidence_refs=[])
