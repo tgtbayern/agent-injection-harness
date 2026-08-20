@@ -63,6 +63,15 @@ Speeches from earlier rounds are NOT shown to you. Use query_history to recall
 them."""
 
 
+# How each kind of turn is announced above the fence. Ordinary speech gets
+# nothing: it is the default and does not need saying.
+_SPEECH_LABEL = {
+    "campaign": ", running for sheriff",
+    "last_words": ", DEAD -- these are their last words and they cannot be "
+                  "questioned about them",
+}
+
+
 class ContextBuilder:
     def __init__(
         self,
@@ -223,14 +232,28 @@ class ContextBuilder:
         this_round = [s for s in public["speeches"] if s["round"] == public["round"]]
         if not this_round:
             lines.append("(nobody has spoken yet this round)")
+
+        # Position numbers the conformity axis is measured on, so they count
+        # within a kind: a campaign speech, an ordinary turn and a dying
+        # player's last words are three different sequences, and pooling them
+        # would make "spoke fifth" mean nothing.
+        seen: dict[str, int] = {}
         for s in this_round:
+            kind = s.get("kind", "speech")
+            seen[kind] = seen.get(kind, 0) + 1
+            position = seen[kind]
+            label = _SPEECH_LABEL.get(kind, "")
             if s["player_id"] == view["you"]["player_id"]:
-                lines.append(f"[you, position {s['order'] + 1}] {s['content']}")
+                lines.append(f"[you, position {position}{label}] {s['content']}")
                 continue
             cleaned, dets = self.guard.clean_incoming(
                 s["content"],
                 source=f"player_{s['player_id']}",
-                kind="speech",
+                # The fence carries the kind too. Last words are the one turn
+                # nobody can answer, and a campaign speech has a declared
+                # motive -- a reader that cannot tell them from an ordinary
+                # turn is missing the thing that makes each worth weighing.
+                kind=kind,
                 round_no=s["round"],
             )
             detections.extend(dets)
@@ -239,7 +262,7 @@ class ContextBuilder:
                 "a player" if self.anonymise_speakers
                 else f"player {s['player_id']}"
             )
-            lines.append(f"[{speaker}, position {s['order'] + 1}]")
+            lines.append(f"[{speaker}, position {position}{label}]")
             lines.append(cleaned)
 
         lines += [

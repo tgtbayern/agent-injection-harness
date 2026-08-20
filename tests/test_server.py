@@ -6,6 +6,7 @@ back over the wire, in any response, ever.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 
@@ -155,3 +156,63 @@ def test_the_probe_survives_a_transient_gateway_failure():
     finally:
         fake_gateway.Handler.fail_next = 0
         server.shutdown()
+
+
+# ------------------------------------------------------------------ access
+
+def _app_with_token(monkeypatch, token):
+    """Reimport the app with the env var set: the token is read at import."""
+    import importlib
+
+    monkeypatch.setenv("WEREWOLF_AUTH_TOKEN", token)
+    from werewolf_harness.server import app as appmod
+
+    importlib.reload(appmod)
+    return appmod.app
+
+
+def test_without_a_token_nothing_changes(monkeypatch, tmp_path):
+    """Local runs and this suite must not have to think about auth."""
+    import importlib
+
+    monkeypatch.delenv("WEREWOLF_AUTH_TOKEN", raising=False)
+    from werewolf_harness.server import app as appmod
+
+    importlib.reload(appmod)
+    with TestClient(appmod.app) as client:
+        assert client.get("/api/games").status_code == 200
+
+
+def test_a_configured_token_gates_every_route(monkeypatch):
+    """Including the ones that spend money, which is the point.
+
+    `POST /api/games` and `POST /api/experiments` run real batches against the
+    operator's gateway credit. Reads were already masked; writes were not
+    protected at all, so exposing this port without a token hands a stranger
+    the bill.
+    """
+    app = _app_with_token(monkeypatch, "s3cret")
+    with TestClient(app) as client:
+        for path in ("/", "/api/games", "/api/providers", "/docs", "/static/app.js"):
+            assert client.get(path).status_code == 401, f"{path} was not gated"
+        assert client.post("/api/games", json={"seed": 1}).status_code == 401
+        assert client.post("/api/experiments", json={}).status_code == 401
+
+
+def test_the_right_token_gets_through_either_scheme(monkeypatch):
+    app = _app_with_token(monkeypatch, "s3cret")
+    with TestClient(app) as client:
+        basic = base64.b64encode(b"harness:s3cret").decode()
+        assert client.get("/api/games",
+                          headers={"Authorization": f"Basic {basic}"}).status_code == 200
+        assert client.get("/api/games",
+                          headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_a_wrong_token_is_refused_and_the_browser_is_prompted(monkeypatch):
+    app = _app_with_token(monkeypatch, "s3cret")
+    with TestClient(app) as client:
+        bad = base64.b64encode(b"harness:wrong").decode()
+        r = client.get("/api/games", headers={"Authorization": f"Basic {bad}"})
+        assert r.status_code == 401
+        assert r.headers.get("WWW-Authenticate", "").startswith("Basic")

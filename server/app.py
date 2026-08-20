@@ -12,15 +12,17 @@ read by strangers must not be one careless commit away from leaking a token.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
+import secrets
 import threading
 import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -340,6 +342,58 @@ def experiment_metrics(experiment_id: str):
             label: metrics.summarise(arm_logs) for label, arm_logs in sorted(arms.items())
         },
     }
+
+
+# ----------------------------------------------------------------- access
+
+_AUTH_TOKEN = os.getenv("WEREWOLF_AUTH_TOKEN", "")
+
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    """Gate every request behind HTTP Basic when a token is configured.
+
+    Off by default, so a local run and the test suite are unchanged. It exists
+    because this app is not safe to expose as it stands: `POST /api/games`,
+    `POST /api/experiments` and the probe endpoint all spend the operator's
+    gateway credit, and `DELETE /api/providers/{id}` destroys their config.
+    Anyone who reaches the port can do all three. Reads are already masked;
+    writes were never protected at all.
+
+    Basic rather than a bearer header because the front end is a browser page:
+    the browser prompts once, caches the credentials for the realm, and then
+    attaches them to every same-origin `fetch` itself, so nothing in `app.js`
+    has to know this exists.
+
+    That is the *prompt* path, and it is the only one that works. Putting the
+    credentials in the URL instead (`http://user:pass@host/`) does not merely
+    fail to propagate them -- Chrome refuses to construct a Request from any
+    relative URL once the document URL carries credentials, so every fetch in
+    the page throws and the dashboard loads empty. Navigate plainly and let the
+    browser ask.
+    """
+    if not _AUTH_TOKEN:
+        return await call_next(request)
+
+    header = request.headers.get("authorization", "")
+    scheme, _, encoded = header.partition(" ")
+    supplied = ""
+    if scheme.lower() == "basic":
+        try:
+            supplied = base64.b64decode(encoded).decode("utf-8").partition(":")[2]
+        except (ValueError, UnicodeDecodeError):
+            supplied = ""
+    elif scheme.lower() == "bearer":
+        supplied = encoded          # for curl and scripts
+
+    # Constant time: a token that leaks its own prefix through response timing
+    # is not much of a token.
+    if not secrets.compare_digest(supplied, _AUTH_TOKEN):
+        return Response(
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="agent harness"'},
+        )
+    return await call_next(request)
 
 
 # --------------------------------------------------------------- static

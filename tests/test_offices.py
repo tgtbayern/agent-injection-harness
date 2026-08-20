@@ -8,6 +8,8 @@ privacy invariant that the mechanics could otherwise break.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from werewolf_harness.engine.rules import Phase, Role
@@ -405,8 +407,12 @@ def test_a_twelve_player_game_runs_every_phase_offline():
     assert len(log["config"]["seat_models"]) == 12
 
     tasks = {a["task"] for r in log["rounds"] for a in r["agents"]}
-    assert {"campaign", "campaign_vote", "speak", "vote"} <= tasks
-    assert log["rounds"][0]["sheriff_candidates"], "somebody stood for the badge"
+    assert {"campaign", "speak", "vote"} <= tasks
+    # Whether the election reaches a ballot depends on how many stood, which is
+    # play rather than plumbing: one candidate takes the badge unopposed. Only
+    # assert the ballot when it was actually called for.
+    if len(log["rounds"][0].get("sheriff_candidates") or []) > 1:
+        assert "campaign_vote" in tasks
 
 
 def test_every_task_the_runner_starts_has_a_safe_default():
@@ -420,3 +426,107 @@ def test_every_task_the_runner_starts_has_a_safe_default():
     # `night` is special-cased in the loop: the engine hands back a seeded
     # target rather than a constant, so it is not in the table.
     assert started_by_runner - {"night"} <= set(DEFAULT_ACTIONS)
+
+
+# ------------------------------------------------- what reaches the model
+
+def _context_for(state, viewer, task="speak"):
+    from werewolf_harness.engine.visibility import get_visible_state
+    from werewolf_harness.harness.agent.belief import BeliefState
+    from werewolf_harness.harness.agent.context import ContextBuilder
+    from werewolf_harness.harness.guard import GuardStack
+
+    view = get_visible_state(state, viewer)
+    builder = ContextBuilder(guard=GuardStack(("L1", "L2")))
+    text, _directives, _dets = builder.situation_message(
+        state, view, BeliefState(viewer, state.alive_sorted()), task)
+    return text
+
+
+def _kill_someone_on_night_one(state):
+    """Force a wolf kill through, so there is a corpse with something to say."""
+    wolves = state.setup.wolves()
+    witch = _seat_with(state, Role.WITCH)
+    victim = next(p for p in state.alive_sorted() if p not in wolves and p != witch)
+    silent = {p: ("night_skip", None) for p in state.alive_sorted()
+              if state.role_of(p) in (Role.WITCH, Role.GUARD)}
+    _run_night(state, choices={**{w: ("night_kill", victim) for w in wolves}, **silent})
+    return victim
+
+
+def test_last_words_reach_every_living_agent():
+    """A corpse's turn is public or it is nothing."""
+    state = _state(seed=3)
+    victim = _kill_someone_on_night_one(state)
+    assert victim in state.pending_last_words
+    state.apply_action(victim, {"name": "last_words", "content": "SENTINEL_LW"})
+
+    for viewer in state.alive_sorted():
+        assert "SENTINEL_LW" in _context_for(state, viewer), (
+            f"player {viewer} could not read the last words"
+        )
+
+
+def test_the_prompt_says_which_turns_are_last_words():
+    """Three kinds of speech used to arrive identical.
+
+    A dying player cannot be questioned and a candidate has a declared motive.
+    A reader that cannot tell either from an ordinary turn is missing the thing
+    that makes each one worth weighing differently.
+    """
+    state = _state(seed=3)
+    victim = _kill_someone_on_night_one(state)
+    state.apply_action(victim, {"name": "last_words", "content": "SENTINEL_LW"})
+    runner = next(p for p in state.alive_sorted())
+    while (speaker := state.campaign_speaker()) is not None:
+        state.apply_action(
+            speaker,
+            {"name": "campaign_run", "content": "SENTINEL_CAMPAIGN"}
+            if speaker == runner else {"name": "campaign_pass"},
+        )
+
+    # Read it as somebody who neither died nor stood: your own words are not
+    # fenced back to you, which is correct and would hide what this checks.
+    viewer = next(p for p in state.alive_sorted() if p != runner)
+    text = _context_for(state, viewer)
+    assert 'kind="last_words"' in text
+    assert "cannot be questioned" in text
+    assert 'kind="campaign"' in text
+    assert "running for sheriff" in text
+
+
+def test_speech_positions_are_counted_within_a_kind():
+    """`position` is the conformity axis's independent variable.
+
+    Pooling an election, a round of speeches and a dying player's turn into one
+    sequence makes "spoke fifth" mean nothing at all.
+    """
+    state = _state(seed=3)
+    victim = _kill_someone_on_night_one(state)
+    state.apply_action(victim, {"name": "last_words", "content": "LW"})
+    while (speaker := state.campaign_speaker()) is not None:
+        state.apply_action(speaker, {"name": "campaign_run", "content": "C"})
+
+    text = _context_for(state, state.alive_sorted()[0])
+    campaign_positions = re.findall(r"position (\d+), running for sheriff", text)
+    assert campaign_positions == [str(i + 1) for i in range(len(campaign_positions))], (
+        "the election numbers its own speakers 1..n"
+    )
+
+
+def test_a_night_action_never_reaches_another_agent():
+    """Who the guard covered and what the seer learned stay theirs."""
+    state = _state(seed=3)
+    guard = _seat_with(state, Role.GUARD)
+    seer = _seat_with(state, Role.SEER)
+    charge = next(p for p in state.alive_sorted() if p != guard)
+    _run_night(state, choices={guard: ("night_protect", charge)})
+    state.settle_interrupts_offline()
+
+    for viewer in state.alive_sorted():
+        text = _context_for(state, viewer, task="speak")
+        if viewer != guard:
+            assert "cannot_protect" not in text and "protected_tonight" not in text
+        if viewer != seer:
+            for check_rec in state.seer_checks:
+                assert f"player {check_rec.target} = " not in text
